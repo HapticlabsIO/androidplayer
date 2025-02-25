@@ -5,6 +5,7 @@ plugins {
     alias(libs.plugins.kotlin.android)
     `maven-publish`
     alias(libs.plugins.jreleaser)
+    signing
 }
 
 android {
@@ -48,21 +49,31 @@ publishing {
         register<MavenPublication>("release") {
             groupId = "io.hapticlabs"
             artifactId = "hapticlabsplayer"
-            version = "1.0.0"
+            version = "0.1.0"
 
             pom {
                 name = "Hapticlabs Player"
+                version = "0.1.0"
                 description = "A module to play HLA and OGG haptic files on Android"
-                url="https://hapticlabs.io"
-                inceptionYear="2025"
+                url = "https://github.com/HapticlabsIO/androidplayer"
+                inceptionYear = "2025"
                 licenses {
                     license {
-                        name="MIT License"
-                        url="https://mit-license.org/"
+                        name = "MIT License"
+                        url = "https://github.com/HapticlabsIO/androidplayer/blob/main/LICENSE.txt"
                     }
                 }
-
-
+                developers {
+                    developer {
+                        id = "robot-controller"
+                        name = "Michi"
+                    }
+                }
+                scm {
+                    connection = "scm:git:git://github.com/HapticlabsIO/androidplayer.git"
+                    developerConnection = "scm:git:git://github.com/HapticlabsIO/androidplayer.git"
+                    url = "https://github.com/HapticlabsIO/androidplayer"
+                }
             }
 
             afterEvaluate {
@@ -70,23 +81,23 @@ publishing {
             }
         }
     }
+
+    repositories {
+        maven {
+            url = layout.buildDirectory.dir("staging-deploy").get().asFile.toURI()
+        }
+    }
 }
 
 jreleaser {
     project {
-        inceptionYear = "2025"
-        author("@robot-controller")
+        version = "0.1.0"
+        description = "A module to play HLA and OGG haptic files on Android"
+        copyright = "Copyright (c) 2025 Hapticlabs GmbH"
     }
-    gitRootSearch = true
     signing {
         active = Active.ALWAYS
         armored = true
-        verify = true
-    }
-    release {
-        github {
-            skipRelease = true
-        }
     }
     deploy {
         maven {
@@ -95,9 +106,13 @@ jreleaser {
                 url = "https://central.sonatype.com/api/v1/publisher"
                 stagingRepository(layout.buildDirectory.dir("staging-deploy").get().toString())
                 setAuthorization("Basic")
+                namespace = "io.hapticlabs"
                 applyMavenCentralRules = false
                 sign = true
-                releaseRepository(false)
+                checksums = true
+                sourceJar = true
+                javadocJar = true
+                retryDelay = 60
             }
         }
     }
