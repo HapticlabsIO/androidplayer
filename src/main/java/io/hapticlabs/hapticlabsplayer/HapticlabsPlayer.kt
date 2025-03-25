@@ -12,6 +12,8 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.os.VibrationEffect
+import androidx.mediarouter.media.MediaControlIntent
+import androidx.mediarouter.media.MediaRouteSelector
 import java.io.File
 import java.io.FileInputStream
 import java.nio.charset.StandardCharsets
@@ -27,7 +29,8 @@ class HapticlabsPlayer(private val context: Context) {
 
     private var mediaPlayer: MediaPlayer
     private var audioPlayer: MediaPlayer
-    private var handler: Handler? = null
+    private var handler: Handler
+    private var isBuiltInSpeakerSelected: Boolean = true
 
     init {
         mediaPlayer = MediaPlayer()
@@ -45,6 +48,41 @@ class HapticlabsPlayer(private val context: Context) {
                 generator.setEnabled(false)
             }
         }
+
+        // Listen for device speaker selection to determine whether or not haptic playback must
+        // be routed to the device speaker explicitly
+        handler = Handler(Looper.getMainLooper())
+        handler.post(
+            Runnable {
+                val mediaRouter = MediaRouter.getInstance(context)
+                val selector = MediaRouteSelector.Builder()
+                    .addControlCategory(MediaControlIntent.CATEGORY_LIVE_AUDIO)
+                    .build()
+
+                val mediaRouterCallback = object : MediaRouter.Callback() {
+                    override fun onRouteSelected(
+                        router: MediaRouter,
+                        route: MediaRouter.RouteInfo
+                    ) {
+                        isBuiltInSpeakerSelected = router.selectedRoute.isDeviceSpeaker
+                    }
+
+                    override fun onRouteUnselected(
+                        router: MediaRouter,
+                        route: MediaRouter.RouteInfo
+                    ) {
+                        isBuiltInSpeakerSelected = router.selectedRoute.isDeviceSpeaker
+                    }
+
+                    override fun onRouteChanged(router: MediaRouter, route: MediaRouter.RouteInfo) {
+                        isBuiltInSpeakerSelected = router.selectedRoute.isDeviceSpeaker
+                    }
+                }
+
+                // 4. Add MediaRouter.Callback
+                mediaRouter.addCallback(selector, mediaRouterCallback)
+            }
+        )
     }
 
     protected fun finalize() {
@@ -163,21 +201,17 @@ class HapticlabsPlayer(private val context: Context) {
 
             val syncDelay = 0
 
-            if (handler == null) {
-                handler = Handler(Looper.getMainLooper())
-            }
-
             val startTime = SystemClock.uptimeMillis() + syncDelay
 
             for (i in 0 until audiosArray.size()) {
-                handler?.postAtTime({
+                handler.postAtTime({
                     audioTrackPlayers[i].playAudio()
                 }, startTime + audioDelays[i])
             }
-            handler?.postAtTime({
+            handler.postAtTime({
                 vibrator.vibrate(vibrationEffect)
             }, startTime)
-            handler?.postAtTime({
+            handler.postAtTime({
                 completionCallback()
             }, startTime + durationMs)
         }
@@ -205,12 +239,9 @@ class HapticlabsPlayer(private val context: Context) {
 
         mediaPlayer.setDataSource(uncompressedPath)
 
-
-        val router = MediaRouter.getInstance(context)
-
         // Check if we need to separate audio from the media player
         var useSeparateAudio = false
-        if (!router.selectedRoute.isDeviceSpeaker) {
+        if (!isBuiltInSpeakerSelected) {
             // We need to route the haptics to the device speaker!
 
             val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
