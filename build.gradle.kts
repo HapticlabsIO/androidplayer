@@ -49,11 +49,11 @@ publishing {
         register<MavenPublication>("release") {
             groupId = "io.hapticlabs"
             artifactId = "hapticlabsplayer"
-            version = "0.1.1"
+            version = "0.2.0"
 
             pom {
                 name = "Hapticlabs Player"
-                version = "0.1.1"
+                version = "0.2.0"
                 description = "A module to play HLA and OGG haptic files on Android"
                 url = "https://github.com/HapticlabsIO/androidplayer"
                 inceptionYear = "2025"
@@ -91,7 +91,7 @@ publishing {
 
 jreleaser {
     project {
-        version = "0.1.1"
+        version = "0.2.0"
         description = "A module to play HLA and OGG haptic files on Android"
         copyright = "Copyright (c) 2025 Hapticlabs GmbH"
     }
