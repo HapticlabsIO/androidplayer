@@ -19,7 +19,7 @@ import com.google.gson.JsonObject
 import kotlin.math.abs
 
 class HapticlabsPlayer(private val context: Context) {
-    private val hapticSupportLevel = determineHapticSupportLevel()
+    val hapticSupportLevel = determineHapticSupportLevel()
 
     private var mediaPlayer: MediaPlayer
     private var handler: Handler? = null
