@@ -2,7 +2,9 @@ package io.hapticlabs.hapticlabsplayer
 
 import android.content.Context
 import android.media.AudioAttributes
+import android.media.AudioDeviceInfo
 import android.media.AudioManager
+import android.media.AudioManager.GET_DEVICES_OUTPUTS
 import android.media.MediaPlayer
 import android.media.audiofx.HapticGenerator
 import android.os.Build
@@ -12,20 +14,24 @@ import android.os.SystemClock
 import android.os.VibrationEffect
 import java.io.File
 import java.io.FileInputStream
-import java.io.IOException
 import java.nio.charset.StandardCharsets
 import com.google.gson.Gson
 import com.google.gson.JsonObject
 import kotlin.math.abs
+import androidx.mediarouter.media.MediaRouter
+import java.io.IOException
+
 
 class HapticlabsPlayer(private val context: Context) {
     val hapticSupportLevel = determineHapticSupportLevel()
 
     private var mediaPlayer: MediaPlayer
+    private var audioPlayer: MediaPlayer
     private var handler: Handler? = null
 
     init {
         mediaPlayer = MediaPlayer()
+        audioPlayer = MediaPlayer()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             mediaPlayer.setAudioAttributes(
@@ -43,6 +49,7 @@ class HapticlabsPlayer(private val context: Context) {
 
     protected fun finalize() {
         mediaPlayer.release()
+        audioPlayer.release()
     }
 
     private fun determineHapticSupportLevel(): Int {
@@ -179,16 +186,89 @@ class HapticlabsPlayer(private val context: Context) {
     fun playOGG(path: String, completionCallback: () -> Unit) {
         val uncompressedPath = getUncompressedPath(path, context)
         mediaPlayer.release()
+
+        // Prepare the mediaPlayer
         mediaPlayer = MediaPlayer()
 
+        val mediaPlayerAudioAttributes =
+            AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_GAME)
+                .setContentType((AudioAttributes.CONTENT_TYPE_SONIFICATION))
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            mediaPlayerAudioAttributes.setHapticChannelsMuted(false)
+        }
+
+        mediaPlayer.setAudioAttributes(
+            mediaPlayerAudioAttributes
+                .build()
+        )
+
         mediaPlayer.setDataSource(uncompressedPath)
+
+
+        val router = MediaRouter.getInstance(context)
+
+        // Check if we need to separate audio from the media player
+        var useSeparateAudio = false
+        if (!router.selectedRoute.isDeviceSpeaker) {
+            // We need to route the haptics to the device speaker!
+
+            val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            val outputDevices = audioManager.getDevices(GET_DEVICES_OUTPUTS)
+
+            // Find the built-in speaker
+            val builtInSpeaker =
+                outputDevices.find { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+
+            builtInSpeaker.let {
+                useSeparateAudio = true
+
+                // Set up the audio player
+                audioPlayer.release()
+                audioPlayer = MediaPlayer()
+
+                val audioPlayerAttributesBuilder =
+                    AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_GAME)
+                        .setContentType((AudioAttributes.CONTENT_TYPE_SONIFICATION))
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    audioPlayerAttributesBuilder.setHapticChannelsMuted(true)
+                }
+
+                audioPlayer.setAudioAttributes(
+                    audioPlayerAttributesBuilder.build()
+                )
+
+                // Turn off audio on the device speaker, we only need haptics there
+                mediaPlayer.setVolume(0f, 0f)
+
+                // Route the haptic playback to the built-in speaker
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    mediaPlayer.setPreferredDevice(builtInSpeaker)
+                }
+
+                // Prepare the audio player
+                audioPlayer.setDataSource(uncompressedPath)
+                try {
+                    audioPlayer.prepare()
+                } catch (e: IOException) {
+                    e.printStackTrace()
+                }
+            }
+        }
 
         try {
             mediaPlayer.prepare()
         } catch (e: IOException) {
             e.printStackTrace()
         }
+
+        // Go!
+        if (useSeparateAudio) {
+            audioPlayer.start()
+        }
         mediaPlayer.start()
+
         mediaPlayer.setOnCompletionListener { _ ->
             // Playback completed
             completionCallback()

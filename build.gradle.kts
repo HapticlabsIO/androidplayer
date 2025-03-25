@@ -119,6 +119,7 @@ jreleaser {
 }
 
 dependencies {
+    implementation(libs.androidx.mediarouter)
     testImplementation(libs.junit)
     androidTestImplementation(libs.ext.junit)
     androidTestImplementation(libs.espresso.core)
