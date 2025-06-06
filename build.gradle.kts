@@ -10,7 +10,7 @@ plugins {
 
 android {
     namespace = "io.hapticlabs.hapticlabsplayer"
-    compileSdk = 34
+    compileSdk = 36
 
     defaultConfig {
         minSdk = 24

@@ -12,6 +12,8 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.os.VibrationEffect
+import android.os.vibrator.VibratorEnvelopeEffectInfo
+import android.os.vibrator.VibratorFrequencyProfile
 import androidx.mediarouter.media.MediaControlIntent
 import androidx.mediarouter.media.MediaRouteSelector
 import java.io.File
@@ -25,6 +27,14 @@ import java.io.IOException
 
 
 class HapticlabsPlayer(private val context: Context) {
+    val supportsOnOff = determineSupportsOnOff()
+    val supportsAmplitudeControl = determineSupportsAmplitudeControl()
+    val supportsAudioCoupled = determineSupportsAudioCoupled()
+    val supportsEnvelopeEffects = determineSupportsEnvelopeEffects()
+    val resonantFrequency = determineResonantFrequency()
+    val frequencyResponse = determineFrequencyResponse()
+    val qFactor = determineQFactor()
+    val envelopeEffectInfo = determineEnvelopeEffectInfo()
     val hapticSupportLevel = determineHapticSupportLevel()
 
     private var mediaPlayer: MediaPlayer
@@ -90,11 +100,71 @@ class HapticlabsPlayer(private val context: Context) {
         audioPlayer.release()
     }
 
-    private fun determineHapticSupportLevel(): Int {
+    private fun determineSupportsOnOff(): Boolean {
         val vibrator = getVibrator(context)
-        val level = if (vibrator.hasVibrator()) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && vibrator.hasAmplitudeControl()) {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && AudioManager.isHapticPlaybackSupported()) {
+        return vibrator.hasVibrator()
+    }
+
+    private fun determineSupportsAmplitudeControl(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            getVibrator(context).hasAmplitudeControl()
+        } else {
+            false
+        }
+    }
+
+    private fun determineSupportsAudioCoupled(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            AudioManager.isHapticPlaybackSupported()
+        } else {
+            false
+        }
+    }
+
+    private fun determineSupportsEnvelopeEffects(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {
+            getVibrator(context).areEnvelopeEffectsSupported()
+        } else {
+            false
+        }
+    }
+
+    private fun determineResonantFrequency(): Float {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            getVibrator(context).resonantFrequency
+        } else {
+            Float.NaN
+        }
+    }
+
+    private fun determineFrequencyResponse(): VibratorFrequencyProfile? {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {
+            getVibrator(context).frequencyProfile
+        } else {
+            null
+        }
+    }
+
+    private fun determineQFactor(): Float {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            getVibrator(context).qFactor
+        } else {
+            Float.NaN
+        }
+    }
+
+    private fun determineEnvelopeEffectInfo(): VibratorEnvelopeEffectInfo? {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {
+            getVibrator(context).envelopeEffectInfo
+        } else {
+            null
+        }
+    }
+
+    private fun determineHapticSupportLevel(): Int {
+        val level = if (determineSupportsOnOff()) {
+            if (determineSupportsAmplitudeControl()) {
+                if (determineSupportsAudioCoupled()) {
                     3
                 } else {
                     2
