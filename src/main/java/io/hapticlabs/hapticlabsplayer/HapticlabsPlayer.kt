@@ -6,6 +6,7 @@ import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.media.AudioManager.GET_DEVICES_OUTPUTS
 import android.media.MediaPlayer
+import android.media.SoundPool
 import android.media.audiofx.HapticGenerator
 import android.os.Build
 import android.os.Handler
@@ -24,21 +25,33 @@ import com.google.gson.JsonObject
 import kotlin.math.abs
 import androidx.mediarouter.media.MediaRouter
 import java.io.IOException
+import java.util.concurrent.locks.ReentrantLock
 
+data class HapticCapabilities(
+    val supportsOnOff: Boolean,
+    val supportsAmplitudeControl: Boolean,
+    val supportsAudioCoupled: Boolean,
+    val supportsEnvelopeEffects: Boolean,
+    val resonantFrequency: Float,
+    val frequencyResponse: VibratorFrequencyProfile?,
+    val qFactor: Float,
+    val envelopeEffectInfo: VibratorEnvelopeEffectInfo?,
+    val hapticSupportLevel: Int
+)
+
+data class LoadedOGG(
+    val duration: Int,
+    val soundId: Int
+)
 
 class HapticlabsPlayer(private val context: Context) {
-    val supportsOnOff = determineSupportsOnOff()
-    val supportsAmplitudeControl = determineSupportsAmplitudeControl()
-    val supportsAudioCoupled = determineSupportsAudioCoupled()
-    val supportsEnvelopeEffects = determineSupportsEnvelopeEffects()
-    val resonantFrequency = determineResonantFrequency()
-    val frequencyResponse = determineFrequencyResponse()
-    val qFactor = determineQFactor()
-    val envelopeEffectInfo = determineEnvelopeEffectInfo()
-    val hapticSupportLevel = determineHapticSupportLevel()
+    val hapticsCapabilities = determineHapticCapabilities()
 
     private var mediaPlayer: MediaPlayer
     private var audioPlayer: MediaPlayer
+    private var oggPool: SoundPool
+    private var poolMap: HashMap<String, LoadedOGG> = HashMap()
+    private var poolMutex = ReentrantLock()
     private var handler: Handler
     private var isBuiltInSpeakerSelected: Boolean = true
 
@@ -58,6 +71,16 @@ class HapticlabsPlayer(private val context: Context) {
                 generator.setEnabled(false)
             }
         }
+
+        // Set up the OGG SoundPool
+        val oggPoolAudioAttributes =
+            AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_GAME)
+                .setContentType((AudioAttributes.CONTENT_TYPE_SONIFICATION))
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            oggPoolAudioAttributes.setHapticChannelsMuted(false)
+        }
+        oggPool = SoundPool.Builder().setAudioAttributes(oggPoolAudioAttributes.build()).build()
+
 
         // Listen for device speaker selection to determine whether or not haptic playback must
         // be routed to the device speaker explicitly
@@ -98,90 +121,47 @@ class HapticlabsPlayer(private val context: Context) {
     protected fun finalize() {
         mediaPlayer.release()
         audioPlayer.release()
+        oggPool.release()
     }
 
-    private fun determineSupportsOnOff(): Boolean {
+    private fun determineHapticCapabilities(): HapticCapabilities {
         val vibrator = getVibrator(context)
-        return vibrator.hasVibrator()
-    }
 
-    private fun determineSupportsAmplitudeControl(): Boolean {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            getVibrator(context).hasAmplitudeControl()
-        } else {
-            false
-        }
-    }
+        val supportsOnOff = vibrator.hasVibrator()
+        val supportsAmplitudeControl =
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && vibrator.hasAmplitudeControl()
+        val supportsAudioCoupled =
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && AudioManager.isHapticPlaybackSupported()
 
-    private fun determineSupportsAudioCoupled(): Boolean {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            AudioManager.isHapticPlaybackSupported()
-        } else {
-            false
-        }
-    }
-
-    private fun determineSupportsEnvelopeEffects(): Boolean {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {
-            getVibrator(context).areEnvelopeEffectsSupported()
-        } else {
-            false
-        }
-    }
-
-    private fun determineResonantFrequency(): Float {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            getVibrator(context).resonantFrequency
-        } else {
-            Float.NaN
-        }
-    }
-
-    private fun determineFrequencyResponse(): VibratorFrequencyProfile? {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {
-            getVibrator(context).frequencyProfile
-        } else {
-            null
-        }
-    }
-
-    private fun determineQFactor(): Float {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            getVibrator(context).qFactor
-        } else {
-            Float.NaN
-        }
-    }
-
-    private fun determineEnvelopeEffectInfo(): VibratorEnvelopeEffectInfo? {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {
-            getVibrator(context).envelopeEffectInfo
-        } else {
-            null
-        }
-    }
-
-    private fun determineHapticSupportLevel(): Int {
-        val level = if (determineSupportsOnOff()) {
-            if (determineSupportsAmplitudeControl()) {
-                if (determineSupportsAudioCoupled()) {
-                    3
+        return HapticCapabilities(
+            supportsOnOff,
+            supportsAmplitudeControl,
+            supportsAudioCoupled,
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA && vibrator.areEnvelopeEffectsSupported(),
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) vibrator.resonantFrequency else Float.NaN,
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) vibrator.frequencyProfile else null,
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) getVibrator(context).qFactor else Float.NaN,
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) getVibrator(context).envelopeEffectInfo else null,
+            if (supportsOnOff) {
+                if (supportsAmplitudeControl) {
+                    if (supportsAudioCoupled) {
+                        3
+                    } else {
+                        2
+                    }
                 } else {
-                    2
+                    1
                 }
             } else {
-                1
+                // Vibrator service not available
+                0
             }
-        } else {
-            // Vibrator service not available
-            0
-        }
-        return level
+        )
     }
 
     fun play(directoryPath: String, completionCallback: () -> Unit) {
         // Switch by hapticSupportLevel
-        when (hapticSupportLevel) {
+        when (hapticsCapabilities.hapticSupportLevel) {
             0 -> {
                 return // Do nothing
             }
@@ -287,11 +267,59 @@ class HapticlabsPlayer(private val context: Context) {
         }
     }
 
+    fun ensureOGGIsLoaded(
+        uncompressedPath: String,
+        completionCallback: (soundId: Int, duration: Int) -> Unit
+    ) {
+        // Check if it's already loaded
+        poolMap[uncompressedPath]?.let {
+            completionCallback(it.soundId, it.duration)
+            println("Cached my dude")
+            return
+        }
+
+        // Load the duration
+        val player = MediaPlayer()
+        player.setDataSource(uncompressedPath)
+        player.prepare()
+        val duration = player.duration
+        player.release()
+
+        // Load it into the SoundPool
+        var soundId = -1
+
+        // Mutex to ensure the load completed listener can only execute after soundId has been set
+        poolMutex.lock()
+        oggPool.setOnLoadCompleteListener { _, sampleId, status ->
+            // Wait for the soundId to be assigned before calling the completionCallback
+            poolMutex.lock()
+            if (status == 0 && sampleId == soundId) {
+                poolMap[uncompressedPath] = LoadedOGG(duration, soundId)
+                completionCallback(soundId, duration)
+            }
+            poolMutex.unlock()
+        }
+        soundId = oggPool.load(uncompressedPath, 1)
+        poolMutex.unlock()
+    }
+
     fun playOGG(path: String, completionCallback: () -> Unit) {
         val uncompressedPath = getUncompressedPath(path, context)
-        mediaPlayer.release()
 
-        // Prepare the mediaPlayer
+        if (isBuiltInSpeakerSelected) {
+            // SoundPool approach
+            ensureOGGIsLoaded(uncompressedPath) { soundId, duration ->
+                oggPool.play(soundId, 1f, 1f, 1, 0, 1.0f)
+                handler.postDelayed(completionCallback, duration.toLong())
+            }
+            return
+        }
+
+        // Need to route the haptic playback to the device speaker!
+        // That only works with the MediaPlayer.
+
+        // Set up the mediaPlayer
+        mediaPlayer.release()
         mediaPlayer = MediaPlayer()
 
         val mediaPlayerAudioAttributes =
@@ -309,52 +337,52 @@ class HapticlabsPlayer(private val context: Context) {
 
         mediaPlayer.setDataSource(uncompressedPath)
 
-        // Check if we need to separate audio from the media player
+        // Whether we need to run the audioPlayer or not
         var useSeparateAudio = false
-        if (!isBuiltInSpeakerSelected) {
-            // We need to route the haptics to the device speaker!
 
-            val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-            val outputDevices = audioManager.getDevices(GET_DEVICES_OUTPUTS)
+        // We need to route the haptics to the device speaker!
+        // Let's find that device speaker
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val outputDevices = audioManager.getDevices(GET_DEVICES_OUTPUTS)
 
-            // Find the built-in speaker
-            val builtInSpeaker =
-                outputDevices.find { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+        val builtInSpeaker =
+            outputDevices.find { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
 
-            builtInSpeaker.let {
-                useSeparateAudio = true
+        // Continue with the separating approach only if we found a built-in speaker
+        builtInSpeaker?.let {
+            // We will need to run the audioPlayer
+            useSeparateAudio = true
 
-                // Set up the audio player
-                audioPlayer.release()
-                audioPlayer = MediaPlayer()
+            // Set up the audio player
+            audioPlayer.release()
+            audioPlayer = MediaPlayer()
 
-                val audioPlayerAttributesBuilder =
-                    AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_GAME)
-                        .setContentType((AudioAttributes.CONTENT_TYPE_SONIFICATION))
+            val audioPlayerAttributesBuilder =
+                AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_GAME)
+                    .setContentType((AudioAttributes.CONTENT_TYPE_SONIFICATION))
 
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    audioPlayerAttributesBuilder.setHapticChannelsMuted(true)
-                }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                audioPlayerAttributesBuilder.setHapticChannelsMuted(true)
+            }
 
-                audioPlayer.setAudioAttributes(
-                    audioPlayerAttributesBuilder.build()
-                )
+            audioPlayer.setAudioAttributes(
+                audioPlayerAttributesBuilder.build()
+            )
 
-                // Turn off audio on the device speaker, we only need haptics there
-                mediaPlayer.setVolume(0f, 0f)
+            // Turn off audio on the device speaker, we only need haptics there
+            mediaPlayer.setVolume(0f, 0f)
 
-                // Route the haptic playback to the built-in speaker
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                    mediaPlayer.setPreferredDevice(builtInSpeaker)
-                }
+            // Route the haptic playback to the built-in speaker
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                mediaPlayer.setPreferredDevice(builtInSpeaker)
+            }
 
-                // Prepare the audio player
-                audioPlayer.setDataSource(uncompressedPath)
-                try {
-                    audioPlayer.prepare()
-                } catch (e: IOException) {
-                    e.printStackTrace()
-                }
+            // Prepare the audio player
+            audioPlayer.setDataSource(uncompressedPath)
+            try {
+                audioPlayer.prepare()
+            } catch (e: IOException) {
+                e.printStackTrace()
             }
         }
 
