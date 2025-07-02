@@ -307,13 +307,13 @@ class HapticlabsPlayer(private val context: Context) {
         return totalBitsConsumed < 8 * 1_000_000
     }
 
-    fun preload(
-        directoryPath: String,
+    private fun preloadUncompressedPath(
+        uncompressedPath: String,
         completionCallback: (soundId: Int, duration: Int) -> Unit
     ) {
         if (hapticsCapabilities.supportsAudioCoupled) {
             ensureOGGIsLoaded(
-                getUncompressedPath(directoryPathToOGG(directoryPath), context),
+                uncompressedPath,
                 completionCallback
             )
         } else {
@@ -321,8 +321,23 @@ class HapticlabsPlayer(private val context: Context) {
         }
     }
 
-    fun unload(directoryPath: String) {
+    fun preload(
+        directoryPath: String,
+        completionCallback: (soundId: Int, duration: Int) -> Unit
+    ) {
         val uncompressedPath = getUncompressedPath(directoryPathToOGG(directoryPath), context)
+        preloadUncompressedPath(uncompressedPath, completionCallback)
+    }
+
+    fun preloadOGG(
+        oggPath: String,
+        completionCallback: (soundId: Int, duration: Int) -> Unit
+    ) {
+        val uncompressedPath = getUncompressedPath(oggPath, context)
+        preloadUncompressedPath(uncompressedPath, completionCallback)
+    }
+
+    private fun unloadUncompressedPath(uncompressedPath: String) {
         poolMutex.lock()
         val loaded = poolMap[uncompressedPath]
         if (loaded != null) {
@@ -330,6 +345,16 @@ class HapticlabsPlayer(private val context: Context) {
             poolMap.remove(uncompressedPath)
         }
         poolMutex.unlock()
+    }
+
+    fun unload(directoryPath: String) {
+        val uncompressedPath = getUncompressedPath(directoryPathToOGG(directoryPath), context)
+        unloadUncompressedPath(uncompressedPath)
+    }
+
+    fun unloadOGG(oggPath: String) {
+        val uncompressedPath = getUncompressedPath(oggPath, context)
+        unloadUncompressedPath(uncompressedPath)
     }
 
     fun unloadAll() {
