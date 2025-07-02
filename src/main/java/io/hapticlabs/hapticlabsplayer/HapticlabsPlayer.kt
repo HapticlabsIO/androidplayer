@@ -295,8 +295,6 @@ class HapticlabsPlayer(private val context: Context) {
         // Stereo audio + haptics
         val channelCount = 3
 
-        println("$durationMs $sampleRateHz $channelCount")
-
         if (channelCount == null || durationMs == null || sampleRateHz == null) {
             // Truly, we can't tell. So to be safe, we need to assume we can't load it
             return false
@@ -306,7 +304,7 @@ class HapticlabsPlayer(private val context: Context) {
             SOUNDPOOL_BITS_PER_SAMPLE * channelCount * durationMs * sampleRateHz / 1000
 
         // Maximum is one MB
-        return totalBitsConsumed < 8 * 1024 * 1024
+        return totalBitsConsumed < 8 * 1_000_000
     }
 
     fun preload(
@@ -349,7 +347,6 @@ class HapticlabsPlayer(private val context: Context) {
         // Check if it's already loaded
         poolMap[uncompressedPath]?.let {
             completionCallback(it.soundId, it.duration)
-            println("Cached my dude")
             return
         }
 
