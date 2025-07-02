@@ -295,7 +295,7 @@ class HapticlabsPlayer(private val context: Context) {
         // Stereo audio + haptics
         val channelCount = 3
 
-        if (channelCount == null || durationMs == null || sampleRateHz == null) {
+        if (durationMs == null || sampleRateHz == null) {
             // Truly, we can't tell. So to be safe, we need to assume we can't load it
             return false
         }
@@ -327,16 +327,29 @@ class HapticlabsPlayer(private val context: Context) {
         val loaded = poolMap[uncompressedPath]
         if (loaded != null) {
             oggPool.unload(loaded.soundId)
-            poolMap.remove(directoryPathToOGG(directoryPath))
+            poolMap.remove(uncompressedPath)
         }
         poolMutex.unlock()
     }
 
     fun unloadAll() {
         poolMutex.lock()
+
+        // Release all loaded OGGs
         oggPool.release()
-        oggPool = SoundPool.Builder().build()
+
+        // Recreate the SoundPool
+        val oggPoolAudioAttributes =
+            AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_GAME)
+                .setContentType((AudioAttributes.CONTENT_TYPE_SONIFICATION))
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            oggPoolAudioAttributes.setHapticChannelsMuted(false)
+        }
+        oggPool = SoundPool.Builder().setAudioAttributes(oggPoolAudioAttributes.build()).build()
+
+        // Clear the pool map
         poolMap.clear()
+
         poolMutex.unlock()
     }
 
