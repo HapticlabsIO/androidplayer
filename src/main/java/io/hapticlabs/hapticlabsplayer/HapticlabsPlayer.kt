@@ -304,6 +304,7 @@ class HapticlabsPlayer(private val context: Context) {
             // Assume 48 kHz
             48000
         }
+        retriever.release()
 
         // Stereo audio + haptics
         val channelCount = 3
@@ -400,6 +401,7 @@ class HapticlabsPlayer(private val context: Context) {
             val durationMs =
                 retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toInt()
                     ?: 0
+            retriever.release()
 
             poolMap[uncompressedPath] =
                 LoadedOGG(durationMs, oggPool.load(uncompressedPath, 1))
