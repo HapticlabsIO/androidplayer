@@ -52,7 +52,7 @@ class HapticlabsPlayer(private val context: Context) {
     private var audioPlayer: MediaPlayer
     private var oggPool: SoundPool
     private var poolMap: HashMap<String, LoadedOGG> = HashMap()
-    private var poolMutex = ReentrantLock()
+    private var loadedSoundsSet: HashSet<Int> = HashSet()
     private var handler: Handler
     private var isBuiltInSpeakerSelected: Boolean = true
 
@@ -75,15 +75,11 @@ class HapticlabsPlayer(private val context: Context) {
             }
         }
 
-        // Set up the OGG SoundPool
-        val oggPoolAudioAttributes =
-            AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_GAME)
-                .setContentType((AudioAttributes.CONTENT_TYPE_SONIFICATION))
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            oggPoolAudioAttributes.setHapticChannelsMuted(false)
-        }
-        oggPool = SoundPool.Builder().setAudioAttributes(oggPoolAudioAttributes.build()).build()
+        // For the compiler
+        oggPool = SoundPool.Builder().build()
+        oggPool.release()
 
+        setUpSoundPool()
 
         // Listen for device speaker selection to determine whether or not haptic playback must
         // be routed to the device speaker explicitly
@@ -120,6 +116,23 @@ class HapticlabsPlayer(private val context: Context) {
             }
         )
     }
+
+    private fun setUpSoundPool() {
+        val oggPoolAudioAttributes =
+            AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_GAME)
+                .setContentType((AudioAttributes.CONTENT_TYPE_SONIFICATION))
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            oggPoolAudioAttributes.setHapticChannelsMuted(false)
+        }
+        oggPool = SoundPool.Builder().setAudioAttributes(oggPoolAudioAttributes.build()).build()
+
+        oggPool.setOnLoadCompleteListener { _, sampleId, status ->
+            if (status == 0) {
+                loadedSoundsSet.add(sampleId)
+            }
+        }
+    }
+
 
     protected fun finalize() {
         mediaPlayer.release()
@@ -308,43 +321,36 @@ class HapticlabsPlayer(private val context: Context) {
     }
 
     private fun preloadUncompressedPath(
-        uncompressedPath: String,
-        completionCallback: (soundId: Int, duration: Int) -> Unit
+        uncompressedPath: String
     ) {
         if (hapticsCapabilities.supportsAudioCoupled) {
-            ensureOGGIsLoaded(
-                uncompressedPath,
-                completionCallback
+            loadOGG(
+                uncompressedPath
             )
-        } else {
-            completionCallback(-1, 0)
         }
     }
 
     fun preload(
-        directoryPath: String,
-        completionCallback: (soundId: Int, duration: Int) -> Unit
+        directoryPath: String
     ) {
         val uncompressedPath = getUncompressedPath(directoryPathToOGG(directoryPath), context)
-        preloadUncompressedPath(uncompressedPath, completionCallback)
+        preloadUncompressedPath(uncompressedPath)
     }
 
     fun preloadOGG(
-        oggPath: String,
-        completionCallback: (soundId: Int, duration: Int) -> Unit
+        oggPath: String
     ) {
         val uncompressedPath = getUncompressedPath(oggPath, context)
-        preloadUncompressedPath(uncompressedPath, completionCallback)
+        preloadUncompressedPath(uncompressedPath)
     }
 
     private fun unloadUncompressedPath(uncompressedPath: String) {
-        poolMutex.lock()
         val loaded = poolMap[uncompressedPath]
-        if (loaded != null) {
-            oggPool.unload(loaded.soundId)
+        loaded?.soundId?.let {
+            oggPool.unload(it)
             poolMap.remove(uncompressedPath)
+            loadedSoundsSet.remove(it)
         }
-        poolMutex.unlock()
     }
 
     fun unload(directoryPath: String) {
@@ -358,69 +364,58 @@ class HapticlabsPlayer(private val context: Context) {
     }
 
     fun unloadAll() {
-        poolMutex.lock()
-
         // Release all loaded OGGs
         oggPool.release()
 
         // Recreate the SoundPool
-        val oggPoolAudioAttributes =
-            AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_GAME)
-                .setContentType((AudioAttributes.CONTENT_TYPE_SONIFICATION))
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            oggPoolAudioAttributes.setHapticChannelsMuted(false)
-        }
-        oggPool = SoundPool.Builder().setAudioAttributes(oggPoolAudioAttributes.build()).build()
+        setUpSoundPool()
 
         // Clear the pool map
         poolMap.clear()
-
-        poolMutex.unlock()
     }
 
-    fun ensureOGGIsLoaded(
-        uncompressedPath: String,
-        completionCallback: (soundId: Int, duration: Int) -> Unit
+    private fun getOGGSoundId(
+        uncompressedPath: String
+    ): LoadedOGG? {
+        // Check if it's already loaded
+        poolMap[uncompressedPath]?.let {
+            // Already loading or loaded
+            return if (loadedSoundsSet.contains(it.soundId)) it else null
+        } ?: return null
+    }
+
+    private fun loadOGG(
+        uncompressedPath: String
     ) {
         // Check if it's already loaded
         poolMap[uncompressedPath]?.let {
-            completionCallback(it.soundId, it.duration)
+            // Already loading or loaded
             return
         }
 
-        // Load the duration
-        val retriever = MediaMetadataRetriever()
-        retriever.setDataSource(uncompressedPath)
-        val durationMs =
-            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toInt() ?: 0
+        if (canOGGBeLoadedToSoundPool(uncompressedPath)) {
+            // Load the duration
+            val retriever = MediaMetadataRetriever()
+            retriever.setDataSource(uncompressedPath)
+            val durationMs =
+                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toInt()
+                    ?: 0
 
-        // Load it into the SoundPool
-        var soundId = -1
-
-        // Mutex to ensure the load completed listener can only execute after soundId has been set
-        poolMutex.lock()
-        oggPool.setOnLoadCompleteListener { _, sampleId, status ->
-            // Wait for the soundId to be assigned before calling the completionCallback
-            poolMutex.lock()
-            if (status == 0 && sampleId == soundId) {
-                poolMap[uncompressedPath] = LoadedOGG(durationMs, soundId)
-                completionCallback(soundId, durationMs)
-            }
-            poolMutex.unlock()
+            poolMap[uncompressedPath] =
+                LoadedOGG(durationMs, oggPool.load(uncompressedPath, 1))
         }
-        soundId = oggPool.load(uncompressedPath, 1)
-        poolMutex.unlock()
+
     }
 
     fun playOGG(path: String, completionCallback: () -> Unit) {
         val uncompressedPath = getUncompressedPath(path, context)
+        val loadedSound = getOGGSoundId(uncompressedPath)
 
-        if (isBuiltInSpeakerSelected && canOGGBeLoadedToSoundPool(uncompressedPath)) {
+        if (isBuiltInSpeakerSelected && loadedSound != null) {
             // SoundPool approach
-            ensureOGGIsLoaded(uncompressedPath) { soundId, duration ->
-                oggPool.play(soundId, 1f, 1f, 1, 0, 1.0f)
-                handler.postDelayed(completionCallback, duration.toLong())
-            }
+            oggPool.play(loadedSound.soundId, 1f, 1f, 1, 0, 1.0f)
+            println("Playing OGG from SoundPool: $uncompressedPath")
+            handler.postDelayed(completionCallback, loadedSound.duration.toLong())
             return
         }
 
@@ -509,6 +504,7 @@ class HapticlabsPlayer(private val context: Context) {
             audioPlayer.start()
         }
         mediaPlayer.start()
+        println("Playing OGG from MediaPlayer: $uncompressedPath")
 
         mediaPlayer.setOnCompletionListener { _ ->
             // Playback completed
