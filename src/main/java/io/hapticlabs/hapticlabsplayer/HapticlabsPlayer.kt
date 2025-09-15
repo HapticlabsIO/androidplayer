@@ -14,6 +14,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.os.VibrationEffect
+import android.os.VibrationEffect.WaveformEnvelopeBuilder
 import android.os.vibrator.VibratorEnvelopeEffectInfo
 import android.os.vibrator.VibratorFrequencyProfile
 import androidx.mediarouter.media.MediaControlIntent
@@ -26,7 +27,6 @@ import com.google.gson.JsonObject
 import kotlin.math.abs
 import androidx.mediarouter.media.MediaRouter
 import java.io.IOException
-import java.util.concurrent.locks.ReentrantLock
 
 data class HapticCapabilities(
     val supportsOnOff: Boolean,
@@ -37,12 +37,17 @@ data class HapticCapabilities(
     val frequencyResponse: VibratorFrequencyProfile?,
     val qFactor: Float,
     val envelopeEffectInfo: VibratorEnvelopeEffectInfo?,
-    val hapticSupportLevel: Int
+    val hapticSupportLevel: Float
 )
 
 data class LoadedOGG(
     val duration: Int,
     val soundId: Int
+)
+
+data class LoadedEnvelope(
+    val effect: VibrationEffect,
+    val startOffset: Long
 )
 
 class HapticlabsPlayer(private val context: Context) {
@@ -148,12 +153,14 @@ class HapticlabsPlayer(private val context: Context) {
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && vibrator.hasAmplitudeControl()
         val supportsAudioCoupled =
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && AudioManager.isHapticPlaybackSupported()
+        val supportsEnvelopeEffects =
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA && vibrator.areEnvelopeEffectsSupported()
 
         return HapticCapabilities(
             supportsOnOff,
             supportsAmplitudeControl,
             supportsAudioCoupled,
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA && vibrator.areEnvelopeEffectsSupported(),
+            supportsEnvelopeEffects,
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) vibrator.resonantFrequency else Float.NaN,
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) vibrator.frequencyProfile else null,
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) getVibrator(context).qFactor else Float.NaN,
@@ -161,16 +168,20 @@ class HapticlabsPlayer(private val context: Context) {
             if (supportsOnOff) {
                 if (supportsAmplitudeControl) {
                     if (supportsAudioCoupled) {
-                        3
+                        3f
                     } else {
-                        2
+                        if (supportsEnvelopeEffects) {
+                            2.5f
+                        } else {
+                            2f
+                        }
                     }
                 } else {
-                    1
+                    1f
                 }
             } else {
                 // Vibrator service not available
-                0
+                0f
             }
         )
     }
@@ -182,21 +193,26 @@ class HapticlabsPlayer(private val context: Context) {
     fun play(directoryPath: String, completionCallback: () -> Unit) {
         // Switch by hapticSupportLevel
         when (hapticsCapabilities.hapticSupportLevel) {
-            0 -> {
+            0f -> {
                 return // Do nothing
             }
 
-            1 -> {
+            1f -> {
                 val path = "$directoryPath/lvl1/main.hla"
                 return playHLA(path, completionCallback)
             }
 
-            2 -> {
+            2f -> {
                 val path = "$directoryPath/lvl2/main.hla"
                 return playHLA(path, completionCallback)
             }
 
-            3 -> {
+            2.5f -> {
+                val path = "$directoryPath/lvl2_5/main.hle"
+                return playHLE(path, completionCallback)
+            }
+
+            3f -> {
                 val path = directoryPathToOGG(directoryPath)
                 return playOGG(path, completionCallback)
             }
@@ -281,6 +297,127 @@ class HapticlabsPlayer(private val context: Context) {
             handler.postAtTime({
                 vibrator.vibrate(vibrationEffect)
             }, startTime)
+            handler.postAtTime({
+                completionCallback()
+            }, startTime + durationMs)
+        }
+    }
+
+    fun playHLE(path: String, completionCallback: () -> Unit) {
+        val data: String
+
+        val uncompressedPath =
+            getUncompressedPath(path, context)
+
+        val file = File(uncompressedPath)
+        val fis = FileInputStream(file)
+        val dataBytes = ByteArray(file.length().toInt())
+        fis.read(dataBytes)
+        fis.close()
+        data = String(dataBytes, StandardCharsets.UTF_8)
+
+        // Parse the file to a JSON
+        val gson = Gson()
+        val jsonObject = gson.fromJson(data, JsonObject::class.java)
+
+        // Extracting envelopes array
+        val envelopesArray = jsonObject.getAsJsonArray("envelopes")
+        val envelopeEffects =
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.BAKLAVA
+                || ((
+                        hapticsCapabilities.envelopeEffectInfo?.maxSize
+                            ?: 0) <= 0)
+            ) {
+                emptyList()
+            } else {
+                envelopesArray.map { envelopeData ->
+                    val envelopeObject = envelopeData.asJsonObject
+                    val startFrequency = envelopeObject.get("initialFrequency").asFloat.coerceIn(
+                        hapticsCapabilities.frequencyResponse?.minFrequencyHz ?: 0f,
+                        hapticsCapabilities.frequencyResponse?.maxFrequencyHz ?: 500f
+                    )
+                    val startOffset = envelopeObject.get("startOffset").asLong
+                    val points = envelopeObject.getAsJsonArray("points")
+
+                    // Filter those points that have a priority < max supported point count
+                    val mostRelevantPoints = points.filter { point ->
+                        point.asJsonObject.get("priority").asInt < (
+                                hapticsCapabilities.envelopeEffectInfo?.maxSize
+                                    ?: 0)
+                    }
+
+                    val envelope = WaveformEnvelopeBuilder().setInitialFrequencyHz(startFrequency)
+                    var currentTimeInEnvelope = 0L
+
+                    mostRelevantPoints.forEach { p ->
+                        val pointObject = p.asJsonObject
+                        val safeFrequency = pointObject.get("frequency").asFloat.coerceIn(
+                            hapticsCapabilities.frequencyResponse?.minFrequencyHz ?: 0f,
+                            hapticsCapabilities.frequencyResponse?.maxFrequencyHz ?: 500f
+                        )
+                        val amplitude = pointObject.get("amplitude").asFloat
+                        val time = pointObject.get("time").asLong
+
+                        envelope.addControlPoint(
+                            amplitude,
+                            safeFrequency,
+                            time - currentTimeInEnvelope
+                        )
+                        currentTimeInEnvelope = time
+                    }
+
+                    LoadedEnvelope(
+                        envelope.build(), startOffset
+                    )
+                }
+            }
+        val durationMs = jsonObject.get("Duration").asLong
+
+        val audiosArray = jsonObject.getAsJsonArray("Audios")
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            // Prepare the vibration
+            val vibrator = getVibrator(context)
+
+            val audioTrackPlayers = Array(audiosArray.size()) { LowLatencyAudioPlayer("", context) }
+            val audioDelays = IntArray(audiosArray.size())
+
+            // Get the directory of the hla file
+            val audioDirectoryPath = path.substringBeforeLast('/')
+
+            // Prepare the audio files
+            for (i in 0 until audiosArray.size()) {
+                val audioObject = audiosArray[i].asJsonObject
+
+                // Get the "Time" value
+                val time = audioObject.get("Time").asInt
+
+                // Get the "Filename" value
+                val fileName = audioDirectoryPath + "/" + audioObject.get("Filename").asString
+
+                val audioTrackPlayer = LowLatencyAudioPlayer(fileName, context)
+                audioTrackPlayer.preload()
+
+                audioTrackPlayers[i] = audioTrackPlayer
+                audioDelays[i] = time
+            }
+
+            val syncDelay = 0
+
+            val startTime = SystemClock.uptimeMillis() + syncDelay
+
+            for (i in 0 until audiosArray.size()) {
+                handler.postAtTime({
+                    audioTrackPlayers[i].playAudio()
+                }, startTime + audioDelays[i])
+            }
+
+            envelopeEffects.map { effect ->
+                handler.postAtTime({
+                    vibrator.vibrate(effect.effect)
+                }, startTime + effect.startOffset)
+            }
+
             handler.postAtTime({
                 completionCallback()
             }, startTime + durationMs)
