@@ -15,17 +15,17 @@ import android.os.Looper
 import android.os.SystemClock
 import android.os.VibrationEffect
 import android.os.VibrationEffect.WaveformEnvelopeBuilder
+import android.util.Log
 import android.os.vibrator.VibratorEnvelopeEffectInfo
 import android.os.vibrator.VibratorFrequencyProfile
 import androidx.mediarouter.media.MediaControlIntent
 import androidx.mediarouter.media.MediaRouteSelector
 import java.io.File
-import java.io.FileInputStream
 import java.nio.charset.StandardCharsets
 import com.google.gson.Gson
 import com.google.gson.JsonObject
-import kotlin.math.abs
 import androidx.mediarouter.media.MediaRouter
+import com.google.gson.JsonSyntaxException
 import java.io.IOException
 
 data class HapticCapabilities(
@@ -37,31 +37,161 @@ data class HapticCapabilities(
     val frequencyResponse: VibratorFrequencyProfile?,
     val qFactor: Float,
     val envelopeEffectInfo: VibratorEnvelopeEffectInfo?,
-    val hapticSupportLevel: Float
+    val hapticSupportLevel: Int
 )
+
+data class LegacyHlaAudio(
+    val Time: Int,
+    val Filename: String
+)
+
+// Original HLA format before v2
+data class LegacyHLA(
+    val ProjectName: String,
+    val TrackName: String,
+    val Duration: Long,
+    val RequiredAudioFiles: List<String>,
+    val Audios: List<LegacyHlaAudio>,
+    val Timings: LongArray,
+    val Amplitudes: IntArray,
+    val Repeat: Int
+)
+
+
+interface HasDuration {
+    val duration: Long
+}
+
+interface HasOffset {
+    val startOffset: Long
+}
+
+data class HlaAudio(
+    override val startOffset: Long,
+    val filename: String
+) : HasOffset
+
+interface ReferencesAudio {
+    val audios: List<HlaAudio>
+    val requiredAudioFiles: List<String>
+}
+
+data class PWLEPoint(
+    val priority: Int,
+    val frequency: Float,
+    val amplitude: Float,
+    val time: Long
+)
+
+data class AmplitudeWaveform(
+    val timings: LongArray,
+    val amplitudes: IntArray,
+    val repeat: Int,
+    override val startOffset: Long
+) : HasOffset
+
+data class HapticPrimitive(
+    val name: String,
+    val scale: Float,
+    override val startOffset: Long
+) : HasOffset
+
+data class OGGFile(
+    val name: String,
+    override val startOffset: Long
+) : HasOffset
+
+data class PWLEEnvelope(
+    val initialFrequency: Float,
+    val points: List<PWLEPoint>,
+    override val startOffset: Long
+) : HasOffset
+
+
+data class WaveformSignal(
+    val primitives: List<HapticPrimitive>,
+    val amplitudes: List<AmplitudeWaveform>,
+    override val duration: Long,
+    override val requiredAudioFiles: List<String>,
+    override val audios: List<HlaAudio>
+) : HasDuration, ReferencesAudio
+
+data class OGGSignal(
+    val primitives: List<HapticPrimitive>,
+    val amplitudes: List<AmplitudeWaveform>,
+    val oggs: List<OGGFile>,
+    override val duration: Long,
+    override val requiredAudioFiles: List<String>,
+    override val audios: List<HlaAudio>
+) : HasDuration, ReferencesAudio
+
+data class PWLESignal(
+    val primitives: List<HapticPrimitive>,
+    val amplitudes: List<AmplitudeWaveform>,
+    val oggs: List<OGGFile>,
+    val envelopes: List<PWLEEnvelope>,
+    override val duration: Long,
+    override val requiredAudioFiles: List<String>,
+    override val audios: List<HlaAudio>
+) : HasDuration, ReferencesAudio
+
+data class HLA2(
+    val version: Int,
+    val projectName: String,
+    val trackName: String,
+    val onOffSignal: WaveformSignal,
+    val amplitudeSignal: WaveformSignal,
+    val oggSignal: OGGSignal,
+    val pwleSignal: PWLESignal
+)
+
 
 data class LoadedOGG(
+    val soundId: Int,
     val duration: Int,
-    val soundId: Int
 )
 
-data class LoadedEnvelope(
+data class LoadedEffect(
     val effect: VibrationEffect,
-    val startOffset: Long
-)
+    override val startOffset: Long
+) : HasOffset
+
+data class LoadedAudio(
+    val audio: LowLatencyAudioPlayer,
+    override val startOffset: Long
+) : HasOffset
+
+data class UncompressedOGGFile(
+    val uncompressedPath: String,
+    override val startOffset: Long
+) : HasOffset
+
+data class LoadedHLA(
+    val effects: List<LoadedEffect>,
+    val audio: List<LoadedAudio>,
+    val oggs: List<UncompressedOGGFile>,
+    override val duration: Long
+) : HasDuration
 
 class HapticlabsPlayer(private val context: Context) {
+    private val TAG = "HapticlabsPlayer"
+
     val hapticsCapabilities = determineHapticCapabilities()
 
     private var mediaPlayer: MediaPlayer
     private var audioPlayer: MediaPlayer
     private var oggPool: SoundPool
     private var poolMap: HashMap<String, LoadedOGG> = HashMap()
+
+
+    private var hacMap: HashMap<String, LoadedHLA> = HashMap()
     private var loadedSoundsSet: HashSet<Int> = HashSet()
     private var handler: Handler
     private var isBuiltInSpeakerSelected: Boolean = true
 
     private val SOUNDPOOL_BITS_PER_SAMPLE = 16
+
+    private val HAC_EXTENSION = ".hac"
 
     init {
         mediaPlayer = MediaPlayer()
@@ -167,21 +297,19 @@ class HapticlabsPlayer(private val context: Context) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) getVibrator(context).envelopeEffectInfo else null,
             if (supportsOnOff) {
                 if (supportsAmplitudeControl) {
-                    if (supportsAudioCoupled) {
-                        3f
+                    if (supportsEnvelopeEffects) {
+                        4
+                    } else if (supportsAudioCoupled) {
+                        3
                     } else {
-                        if (supportsEnvelopeEffects) {
-                            2.5f
-                        } else {
-                            2f
-                        }
+                        2
                     }
                 } else {
-                    1f
+                    1
                 }
             } else {
                 // Vibrator service not available
-                0f
+                0
             }
         )
     }
@@ -190,241 +318,406 @@ class HapticlabsPlayer(private val context: Context) {
         return "$directoryPath/lvl3/main.ogg"
     }
 
-    fun play(directoryPath: String, completionCallback: () -> Unit) {
+    fun play(directoryOrHACPath: String, completionCallback: () -> Unit) {
+        // Check if it's a .hac file
+        if (directoryOrHACPath.endsWith(HAC_EXTENSION)) {
+            playHAC(directoryOrHACPath, completionCallback)
+            return
+        }
+
+        // Not a .hac file -> Legacy directory approach
+
         // Switch by hapticSupportLevel
         when (hapticsCapabilities.hapticSupportLevel) {
-            0f -> {
+            0 -> {
                 return // Do nothing
             }
 
-            1f -> {
-                val path = "$directoryPath/lvl1/main.hla"
-                return playHLA(path, completionCallback)
+            1 -> {
+                val hlaDirectoryPath = File("$directoryOrHACPath/lvl1")
+                val hlaFile = File(hlaDirectoryPath, "main.hla")
+                return loadHLAImpl(
+                    PossiblyZippedDirectory(
+                        hlaDirectoryPath.absolutePath,
+                        false,
+                        context
+                    ), hlaFile
+                ) { loadedHLA ->
+                    playLoadedHLA2(loadedHLA, completionCallback)
+                }
             }
 
-            2f -> {
-                val path = "$directoryPath/lvl2/main.hla"
-                return playHLA(path, completionCallback)
+            2 -> {
+                val hlaDirectoryPath = File("$directoryOrHACPath/lvl2")
+                val hlaFile = File(hlaDirectoryPath, "main.hla")
+                return loadHLAImpl(
+                    PossiblyZippedDirectory(
+                        hlaDirectoryPath.absolutePath,
+                        false,
+                        context
+                    ), hlaFile
+                ) { loadedHLA ->
+                    playLoadedHLA2(loadedHLA, completionCallback)
+                }
             }
 
-            2.5f -> {
-                val path = "$directoryPath/lvl2_5/main.hle"
-                return playHLE(path, completionCallback)
-            }
-
-            3f -> {
-                val path = directoryPathToOGG(directoryPath)
-                return playOGG(path, completionCallback)
+            3, 4 -> {
+                val path = directoryPathToOGG(directoryOrHACPath)
+                return playOGGImpl(
+                    getUncompressedPath(path, context).absolutePath,
+                    completionCallback
+                )
             }
         }
     }
 
-    fun playHLA(path: String, completionCallback: () -> Unit) {
-        val data: String
-
-        val uncompressedPath =
-            getUncompressedPath(path, context)
-
-        val file = File(uncompressedPath)
-        val fis = FileInputStream(file)
-        val dataBytes = ByteArray(file.length().toInt())
-        fis.read(dataBytes)
-        fis.close()
-        data = String(dataBytes, StandardCharsets.UTF_8)
-
-        // Parse the file to a JSON
-        val gson = Gson()
-        val jsonObject = gson.fromJson(data, JsonObject::class.java)
-
-        // Extracting Amplitudes array
-        val amplitudesArray = jsonObject.getAsJsonArray("Amplitudes")
-        val amplitudes = IntArray(amplitudesArray.size())
-        for (i in 0 until amplitudesArray.size()) {
-            amplitudes[i] = abs(amplitudesArray[i].asInt)
-        }
-
-        // Extracting Repeat value
-        val repeat = jsonObject.get("Repeat").asInt
-
-        // Extracting Timings array
-        val timingsArray = jsonObject.getAsJsonArray("Timings")
-        val timings = LongArray(timingsArray.size())
-        for (i in 0 until timingsArray.size()) {
-            timings[i] = timingsArray[i].asLong
-        }
-
-        val durationMs = jsonObject.get("Duration").asLong
-
-        val audiosArray = jsonObject.getAsJsonArray("Audios")
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            // Prepare the vibration
-            val vibrationEffect = VibrationEffect.createWaveform(timings, amplitudes, repeat)
-            val vibrator = getVibrator(context)
-
-            val audioTrackPlayers = Array(audiosArray.size()) { LowLatencyAudioPlayer("", context) }
-            val audioDelays = IntArray(audiosArray.size())
-
-            // Get the directory of the hla file
-            val audioDirectoryPath = path.substringBeforeLast('/')
-
-            // Prepare the audio files
-            for (i in 0 until audiosArray.size()) {
-                val audioObject = audiosArray[i].asJsonObject
-
-                // Get the "Time" value
-                val time = audioObject.get("Time").asInt
-
-                // Get the "Filename" value
-                val fileName = audioDirectoryPath + "/" + audioObject.get("Filename").asString
-
-                val audioTrackPlayer = LowLatencyAudioPlayer(fileName, context)
-                audioTrackPlayer.preload()
-
-                audioTrackPlayers[i] = audioTrackPlayer
-                audioDelays[i] = time
+    private fun loadPrimitives(primitives: List<HapticPrimitive>): List<LoadedEffect> {
+        return if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            // @TODO Need to fallback here
+            Log.w(TAG, "Primitives are not supported on this SDK version, falling back.")
+            emptyList()
+        } else {
+            primitives.map {
+                LoadedEffect(
+                    VibrationEffect.startComposition().addPrimitive(
+                        when (it.name) {
+                            "click" -> VibrationEffect.Composition.PRIMITIVE_CLICK
+                            "thud" -> VibrationEffect.Composition.PRIMITIVE_THUD
+                            "spin" -> VibrationEffect.Composition.PRIMITIVE_SPIN
+                            "quickRise" -> VibrationEffect.Composition.PRIMITIVE_QUICK_RISE
+                            "slowRise" -> VibrationEffect.Composition.PRIMITIVE_SLOW_RISE
+                            "quickFall" -> VibrationEffect.Composition.PRIMITIVE_QUICK_FALL
+                            "tick" -> VibrationEffect.Composition.PRIMITIVE_TICK
+                            "lowTick" -> VibrationEffect.Composition.PRIMITIVE_LOW_TICK
+                            // Default to click if the name is unknown
+                            else -> VibrationEffect.Composition.PRIMITIVE_CLICK
+                        }, it.scale
+                    ).compose(),
+                    it.startOffset
+                )
             }
-
-            val syncDelay = 0
-
-            val startTime = SystemClock.uptimeMillis() + syncDelay
-
-            for (i in 0 until audiosArray.size()) {
-                handler.postAtTime({
-                    audioTrackPlayers[i].playAudio()
-                }, startTime + audioDelays[i])
-            }
-            handler.postAtTime({
-                vibrator.vibrate(vibrationEffect)
-            }, startTime)
-            handler.postAtTime({
-                completionCallback()
-            }, startTime + durationMs)
         }
     }
 
-    fun playHLE(path: String, completionCallback: () -> Unit) {
-        val data: String
+    private fun loadAmplitudeWaveforms(amplitudes: List<AmplitudeWaveform>): List<LoadedEffect> {
+        return if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            Log.e(TAG, "No amplitude effects supported on this device")
+            emptyList()
+        } else {
+            amplitudes.map {
+                LoadedEffect(
+                    VibrationEffect.createWaveform(it.timings, it.amplitudes, it.repeat),
+                    it.startOffset
+                )
+            }
+        }
+    }
 
-        val uncompressedPath =
-            getUncompressedPath(path, context)
-
-        val file = File(uncompressedPath)
-        val fis = FileInputStream(file)
-        val dataBytes = ByteArray(file.length().toInt())
-        fis.read(dataBytes)
-        fis.close()
-        data = String(dataBytes, StandardCharsets.UTF_8)
-
-        // Parse the file to a JSON
-        val gson = Gson()
-        val jsonObject = gson.fromJson(data, JsonObject::class.java)
-
+    private fun loadPWLEWaveforms(pwles: List<PWLEEnvelope>): List<LoadedEffect> {
         // Extracting envelopes array
-        val envelopesArray = jsonObject.getAsJsonArray("envelopes")
-        val envelopeEffects =
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.BAKLAVA
-                || ((
-                        hapticsCapabilities.envelopeEffectInfo?.maxSize
-                            ?: 0) <= 0)
-            ) {
-                emptyList()
-            } else {
-                envelopesArray.map { envelopeData ->
-                    val envelopeObject = envelopeData.asJsonObject
-                    val startFrequency = envelopeObject.get("initialFrequency").asFloat.coerceIn(
+        return if (Build.VERSION.SDK_INT < Build.VERSION_CODES.BAKLAVA
+            || ((
+                    hapticsCapabilities.envelopeEffectInfo?.maxSize
+                        ?: 0) <= 0)
+        ) {
+            Log.e(TAG, "No envelope effects supported on this device")
+            emptyList<LoadedEffect>()
+        } else {
+            pwles.map { envelopeData ->
+                val startFrequency = envelopeData.initialFrequency.coerceIn(
+                    hapticsCapabilities.frequencyResponse?.minFrequencyHz ?: 0f,
+                    hapticsCapabilities.frequencyResponse?.maxFrequencyHz ?: 500f
+                )
+
+                // Filter those points that have a priority < max supported point count
+                val mostRelevantPoints = envelopeData.points.filter { point ->
+                    point.priority < (
+                            hapticsCapabilities.envelopeEffectInfo?.maxSize
+                                ?: 0)
+                }
+
+                val envelope = WaveformEnvelopeBuilder().setInitialFrequencyHz(startFrequency)
+                var currentTimeInEnvelope = 0L
+
+                mostRelevantPoints.forEach { p ->
+                    val safeFrequency = p.frequency.coerceIn(
                         hapticsCapabilities.frequencyResponse?.minFrequencyHz ?: 0f,
                         hapticsCapabilities.frequencyResponse?.maxFrequencyHz ?: 500f
                     )
-                    val startOffset = envelopeObject.get("startOffset").asLong
-                    val points = envelopeObject.getAsJsonArray("points")
 
-                    // Filter those points that have a priority < max supported point count
-                    val mostRelevantPoints = points.filter { point ->
-                        point.asJsonObject.get("priority").asInt < (
-                                hapticsCapabilities.envelopeEffectInfo?.maxSize
-                                    ?: 0)
-                    }
-
-                    val envelope = WaveformEnvelopeBuilder().setInitialFrequencyHz(startFrequency)
-                    var currentTimeInEnvelope = 0L
-
-                    mostRelevantPoints.forEach { p ->
-                        val pointObject = p.asJsonObject
-                        val safeFrequency = pointObject.get("frequency").asFloat.coerceIn(
-                            hapticsCapabilities.frequencyResponse?.minFrequencyHz ?: 0f,
-                            hapticsCapabilities.frequencyResponse?.maxFrequencyHz ?: 500f
-                        )
-                        val amplitude = pointObject.get("amplitude").asFloat
-                        val time = pointObject.get("time").asLong
-
-                        envelope.addControlPoint(
-                            amplitude,
-                            safeFrequency,
-                            time - currentTimeInEnvelope
-                        )
-                        currentTimeInEnvelope = time
-                    }
-
-                    LoadedEnvelope(
-                        envelope.build(), startOffset
+                    envelope.addControlPoint(
+                        p.amplitude,
+                        safeFrequency,
+                        p.time - currentTimeInEnvelope
                     )
+                    currentTimeInEnvelope = p.time
                 }
+
+                LoadedEffect(
+                    envelope.build(), envelopeData.startOffset
+                )
             }
-        val durationMs = jsonObject.get("Duration").asLong
-
-        val audiosArray = jsonObject.getAsJsonArray("Audios")
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            // Prepare the vibration
-            val vibrator = getVibrator(context)
-
-            val audioTrackPlayers = Array(audiosArray.size()) { LowLatencyAudioPlayer("", context) }
-            val audioDelays = IntArray(audiosArray.size())
-
-            // Get the directory of the hla file
-            val audioDirectoryPath = path.substringBeforeLast('/')
-
-            // Prepare the audio files
-            for (i in 0 until audiosArray.size()) {
-                val audioObject = audiosArray[i].asJsonObject
-
-                // Get the "Time" value
-                val time = audioObject.get("Time").asInt
-
-                // Get the "Filename" value
-                val fileName = audioDirectoryPath + "/" + audioObject.get("Filename").asString
-
-                val audioTrackPlayer = LowLatencyAudioPlayer(fileName, context)
-                audioTrackPlayer.preload()
-
-                audioTrackPlayers[i] = audioTrackPlayer
-                audioDelays[i] = time
-            }
-
-            val syncDelay = 0
-
-            val startTime = SystemClock.uptimeMillis() + syncDelay
-
-            for (i in 0 until audiosArray.size()) {
-                handler.postAtTime({
-                    audioTrackPlayers[i].playAudio()
-                }, startTime + audioDelays[i])
-            }
-
-            envelopeEffects.map { effect ->
-                handler.postAtTime({
-                    vibrator.vibrate(effect.effect)
-                }, startTime + effect.startOffset)
-            }
-
-            handler.postAtTime({
-                completionCallback()
-            }, startTime + durationMs)
         }
     }
 
-    fun canOGGBeLoadedToSoundPool(
+    private fun loadAudios(
+        audioDirectory: PossiblyZippedDirectory,
+        audios: List<HlaAudio>
+    ): List<LoadedAudio> {
+        return audios.mapNotNull {
+            audioDirectory.getChild(it.filename)?.let { audioFile ->
+                val player = LowLatencyAudioPlayer(audioFile, context)
+                player.preload()
+
+                LoadedAudio(
+                    player,
+                    it.startOffset
+                )
+            } ?: run {
+                Log.e(TAG, "Failed to find audio file: ${it.filename} in directory: $audioDirectory")
+                null
+            }
+        }
+    }
+
+    private fun loadOGGs(
+        oggDirectory: PossiblyZippedDirectory,
+        oggs: List<OGGFile>
+    ): List<UncompressedOGGFile> {
+        return oggs.mapNotNull {
+            oggDirectory.getChild(it.name)?.let { oggFile ->
+                UncompressedOGGFile(
+                    oggFile.absolutePath,
+                    it.startOffset
+                )
+            } ?: run {
+                Log.e(TAG, "Failed to find OGG file: ${it.name}")
+                null
+            }
+        }
+    }
+
+    private fun loadHLA2(
+        resourcesDirectoryPath: PossiblyZippedDirectory,
+        hla: HLA2,
+        completionCallback: (loadedHLA: LoadedHLA) -> Unit
+    ) {
+        when (hapticsCapabilities.hapticSupportLevel) {
+            0 -> completionCallback(LoadedHLA(emptyList(), emptyList(), emptyList(), 0))
+            1 -> {
+                completionCallback(
+                    LoadedHLA(
+                        loadPrimitives(hla.onOffSignal.primitives) + loadAmplitudeWaveforms(hla.onOffSignal.amplitudes),
+                        loadAudios(resourcesDirectoryPath, hla.onOffSignal.audios),
+                        emptyList(),
+                        hla.onOffSignal.duration
+                    )
+                )
+            }
+
+            2 -> {
+                completionCallback(
+                    LoadedHLA(
+                        loadPrimitives(hla.amplitudeSignal.primitives) + loadAmplitudeWaveforms(
+                            hla.amplitudeSignal.amplitudes
+                        ),
+                        loadAudios(resourcesDirectoryPath, hla.amplitudeSignal.audios),
+                        emptyList(),
+                        hla.amplitudeSignal.duration
+                    )
+                )
+            }
+
+            3 -> {
+                completionCallback(
+                    LoadedHLA(
+                        loadPrimitives(hla.oggSignal.primitives) + loadAmplitudeWaveforms(hla.oggSignal.amplitudes),
+                        loadAudios(resourcesDirectoryPath, hla.oggSignal.audios),
+                        loadOGGs(resourcesDirectoryPath, hla.oggSignal.oggs),
+                        hla.oggSignal.duration
+                    )
+                )
+            }
+
+            4 -> {
+                completionCallback(
+                    LoadedHLA(
+                        loadPrimitives(hla.pwleSignal.primitives) + loadAmplitudeWaveforms(hla.pwleSignal.amplitudes) + loadPWLEWaveforms(
+                            hla.pwleSignal.envelopes
+                        ),
+                        loadAudios(resourcesDirectoryPath, hla.pwleSignal.audios),
+                        loadOGGs(resourcesDirectoryPath, hla.pwleSignal.oggs),
+                        hla.pwleSignal.duration
+                    )
+                )
+            }
+        }
+    }
+
+    private fun loadLegacyHLA(
+        audioDirectoryPath: PossiblyZippedDirectory,
+        hla: LegacyHLA,
+        completionCallback: (loadedHLA: LoadedHLA) -> Unit
+    ) {
+        // Map the LegacyHLA to a WaveformSignal
+        val amplitudeWaveform = AmplitudeWaveform(
+            hla.Timings,
+            hla.Amplitudes,
+            hla.Repeat,
+            0
+        )
+
+        val requiredAudioFiles = hla.RequiredAudioFiles
+        val audios = hla.Audios.map { HlaAudio(it.Time.toLong(), it.Filename) }
+
+        return loadHLA2(
+            audioDirectoryPath,
+            HLA2(
+                2,
+                hla.ProjectName,
+                hla.TrackName,
+                WaveformSignal(
+                    emptyList(),
+                    listOf(amplitudeWaveform),
+                    hla.Duration,
+                    requiredAudioFiles,
+                    audios
+                ),
+                WaveformSignal(
+                    emptyList(),
+                    listOf(amplitudeWaveform),
+                    hla.Duration,
+                    requiredAudioFiles,
+                    audios
+                ),
+                OGGSignal(
+                    emptyList(),
+                    listOf(amplitudeWaveform),
+                    emptyList(),
+                    hla.Duration,
+                    requiredAudioFiles,
+                    audios
+                ),
+                PWLESignal(
+                    emptyList(),
+                    listOf(amplitudeWaveform),
+                    emptyList(),
+                    emptyList(),
+                    hla.Duration,
+                    requiredAudioFiles,
+                    audios
+                )
+            ),
+            completionCallback
+        )
+    }
+
+    private fun playLoadedHLA2(loadedHLA: LoadedHLA, completionCallback: () -> Unit) {
+        // Schedule everything to play back
+        val syncDelay = 0
+
+        val startTime = SystemClock.uptimeMillis() + syncDelay
+
+        for (oneAudio in loadedHLA.audio) {
+            handler.postAtTime({
+                oneAudio.audio.playAudio()
+            }, startTime + oneAudio.startOffset)
+        }
+
+        for (oneOGG in loadedHLA.oggs) {
+            handler.postAtTime({
+                this.playOGGImpl(oneOGG.uncompressedPath) {}
+            }, startTime + oneOGG.startOffset)
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            for (oneEffect in loadedHLA.effects) {
+                handler.postAtTime({
+                    getVibrator(context).vibrate(oneEffect.effect)
+                }, startTime + oneEffect.startOffset)
+            }
+        }
+
+        handler.postAtTime({
+            completionCallback()
+        }, startTime + loadedHLA.duration)
+    }
+
+    fun playHLA(hlaPath: String, completionCallback: () -> Unit) {
+        val uncompressedPath = getUncompressedPath(hlaPath, context)
+        File(hlaPath).parent?.let {
+            val parentDir = PossiblyZippedDirectory(it, false, context)
+            loadHLAImpl(parentDir, uncompressedPath) { loadedHLA ->
+                playLoadedHLA2(loadedHLA, completionCallback)
+            }
+        } ?: {
+            // Failed to obtain parent directory
+            Log.e(TAG, "No parent directory found for .hla file: $hlaPath")
+            completionCallback()
+        }
+    }
+
+    private fun loadHAC(hacPath: String, completionCallback: (loadedHLA: LoadedHLA) -> Unit) {
+        val hacDirectory = PossiblyZippedDirectory(hacPath, true, context)
+        val hlaFile = hacDirectory.getChild("main.hla")
+        hlaFile?.let {
+            loadHLAImpl(hacDirectory, it, completionCallback)
+        } ?: {
+            // No .hla file found
+            Log.e(TAG, "No .hla file found in .hac file: $hacPath")
+            completionCallback(
+                LoadedHLA(
+                    emptyList(),
+                    emptyList(),
+                    emptyList(),
+                    0
+                )
+            )
+        }
+    }
+
+    fun playHAC(hacPath: String, completionCallback: () -> Unit) {
+        loadHAC(hacPath) {
+            playLoadedHLA2(it, completionCallback)
+        }
+    }
+
+    private fun loadHLAImpl(
+        audioDirectoryPath: PossiblyZippedDirectory,
+        hlaFile: File,
+        completionCallback: (loadedHLA: LoadedHLA) -> Unit
+    ) {
+        val data = hlaFile.readText(StandardCharsets.UTF_8)
+
+        // Parse the file to a JSON
+        val gson = Gson()
+        val jsonObject = gson.fromJson(data, JsonObject::class.java)
+
+        if (jsonObject.has("version")) {
+            if (jsonObject.get("version").asInt != 2) {
+                // Invalid version
+                Log.e(TAG, "Unknown HLA version: ${jsonObject.get("version").asInt}")
+                return
+            }
+            // It's an HLA2 file
+            try {
+                val hla2 = gson.fromJson(jsonObject, HLA2::class.java)
+                loadHLA2(audioDirectoryPath, hla2, completionCallback)
+            } catch (e: JsonSyntaxException) {
+                Log.e(TAG, "Failed to parse the file as HLA2", e)
+            }
+        } else {
+            // It's likely a LegacyHLA file
+            try {
+                val legacyHLA = gson.fromJson(data, LegacyHLA::class.java)
+                loadLegacyHLA(audioDirectoryPath, legacyHLA, completionCallback)
+            } catch (e: JsonSyntaxException) {
+                Log.e(TAG, "Failed to parse the file as LegacyHLA", e)
+            }
+        }
+    }
+
+    private fun canOGGBeLoadedToSoundPool(
         uncompressedPath: String
     ): Boolean {
         if (poolMap.containsKey(uncompressedPath)) {
@@ -458,7 +751,7 @@ class HapticlabsPlayer(private val context: Context) {
         return totalBitsConsumed < 8 * 1_000_000
     }
 
-    private fun preloadUncompressedPath(
+    private fun preloadUncompressedPathOGG(
         uncompressedPath: String
     ) {
         if (hapticsCapabilities.supportsAudioCoupled) {
@@ -469,20 +762,41 @@ class HapticlabsPlayer(private val context: Context) {
     }
 
     fun preload(
-        directoryPath: String
+        directoryOrHacPath: String
     ) {
-        val uncompressedPath = getUncompressedPath(directoryPathToOGG(directoryPath), context)
-        preloadUncompressedPath(uncompressedPath)
+        if (directoryOrHacPath.endsWith(HAC_EXTENSION)) {
+            if (hacMap.containsKey(directoryOrHacPath)) {
+                // Already loaded
+                Log.w(
+                    TAG,
+                    "Tried to load an already loaded .hac file: $directoryOrHacPath. Call unload() first."
+                )
+                return
+            }
+
+            loadHAC(directoryOrHacPath) {
+                // Store the result in the preloaded map
+                hacMap[directoryOrHacPath] = it
+
+                // Try to preload the oggs as well
+                it.oggs.forEach { ogg ->
+                    preloadUncompressedPathOGG(ogg.uncompressedPath)
+                }
+            }
+        } else {
+            // Legacy directory approach
+            preloadOGG(directoryPathToOGG(directoryOrHacPath))
+        }
     }
 
     fun preloadOGG(
         oggPath: String
     ) {
         val uncompressedPath = getUncompressedPath(oggPath, context)
-        preloadUncompressedPath(uncompressedPath)
+        preloadUncompressedPathOGG(uncompressedPath.absolutePath)
     }
 
-    private fun unloadUncompressedPath(uncompressedPath: String) {
+    private fun unloadUncompressedPathOGG(uncompressedPath: String) {
         val loaded = poolMap[uncompressedPath]
         loaded?.soundId?.let {
             oggPool.unload(it)
@@ -492,13 +806,27 @@ class HapticlabsPlayer(private val context: Context) {
     }
 
     fun unload(directoryPath: String) {
-        val uncompressedPath = getUncompressedPath(directoryPathToOGG(directoryPath), context)
-        unloadUncompressedPath(uncompressedPath)
+        if (directoryPath.endsWith(HAC_EXTENSION)) {
+            hacMap[directoryPath]?.let {
+                // Unload the included oggs
+                it.oggs.forEach { ogg ->
+                    unloadUncompressedPathOGG(ogg.uncompressedPath)
+                }
+
+                // Remove from the preload map
+                hacMap.remove(directoryPath)
+            } ?: {
+                Log.w(TAG, "Tried to unload a non-loaded .hac file: $directoryPath")
+            }
+        } else {
+            // Legacy directory approach
+            unloadOGG(directoryPathToOGG(directoryPath))
+        }
     }
 
     fun unloadOGG(oggPath: String) {
         val uncompressedPath = getUncompressedPath(oggPath, context)
-        unloadUncompressedPath(uncompressedPath)
+        unloadUncompressedPathOGG(uncompressedPath.absolutePath)
     }
 
     fun unloadAll() {
@@ -541,19 +869,23 @@ class HapticlabsPlayer(private val context: Context) {
             retriever.release()
 
             poolMap[uncompressedPath] =
-                LoadedOGG(durationMs, oggPool.load(uncompressedPath, 1))
+                LoadedOGG(oggPool.load(uncompressedPath, 1), durationMs)
         }
 
     }
 
-    fun playOGG(path: String, completionCallback: () -> Unit) {
-        val uncompressedPath = getUncompressedPath(path, context)
+    fun playOGG(oggPath: String, completionCallback: () -> Unit) {
+        val uncompressedPath = getUncompressedPath(oggPath, context)
+        playOGGImpl(uncompressedPath.absolutePath, completionCallback)
+    }
+
+    private fun playOGGImpl(uncompressedPath: String, completionCallback: () -> Unit) {
         val loadedSound = getOGGSoundId(uncompressedPath)
 
         if (isBuiltInSpeakerSelected && loadedSound != null) {
             // SoundPool approach
             oggPool.play(loadedSound.soundId, 1f, 1f, 1, 0, 1.0f)
-            println("Playing OGG from SoundPool: $uncompressedPath")
+            Log.d(TAG, "Playing OGG from SoundPool: $uncompressedPath")
             handler.postDelayed(completionCallback, loadedSound.duration.toLong())
             return
         }
@@ -643,7 +975,7 @@ class HapticlabsPlayer(private val context: Context) {
             audioPlayer.start()
         }
         mediaPlayer.start()
-        println("Playing OGG from MediaPlayer: $uncompressedPath")
+        Log.d(TAG, "Playing OGG from MediaPlayer: $uncompressedPath")
 
         mediaPlayer.setOnCompletionListener { _ ->
             // Playback completed

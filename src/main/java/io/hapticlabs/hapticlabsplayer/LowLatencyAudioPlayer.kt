@@ -8,9 +8,10 @@ import android.media.MediaFormat
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.io.IOException
 
-class LowLatencyAudioPlayer(private val filePath: String, private val context: Context) {
+class LowLatencyAudioPlayer(private val filePath: File, private val context: Context) {
     private var audioTrack: AudioTrack? = null
     private var extractor: MediaExtractor? = null
     private var codec: MediaCodec? = null
@@ -22,10 +23,9 @@ class LowLatencyAudioPlayer(private val filePath: String, private val context: C
      * MediaCodec and prepares the AudioTrack for playback.
      */
     fun preload() {
-        val uncompressedPath = getUncompressedPath(filePath, context)
         extractor = MediaExtractor()
         try {
-            extractor?.setDataSource(uncompressedPath)
+            extractor?.setDataSource(filePath.absolutePath)
             var format: MediaFormat? = null
 
             // Find the first audio track in the file

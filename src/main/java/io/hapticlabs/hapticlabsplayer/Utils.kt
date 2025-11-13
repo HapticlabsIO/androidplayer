@@ -31,7 +31,7 @@ fun getVibrator(context: Context): Vibrator {
     }
 }
 
-fun getUncompressedPath(path: String, context: Context): String {
+fun getUncompressedPath(path: String, context: Context): File {
     // Try to normalize the path
     val normalizedPath =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -42,12 +42,12 @@ fun getUncompressedPath(path: String, context: Context): String {
     return if (isAssetPath(normalizedPath, context)) {
         getUncompressedAssetPath(normalizedPath, context)
     } else {
-        normalizedPath
+     File(normalizedPath)
     }
 }
 
-fun getUncompressedAssetPath(assetName: String, context: Context): String {
-    val uncompressedDir = File(context.filesDir, "hapticlabsplayer_uncompressed")
+fun getUncompressedAssetPath(assetName: String, context: Context): File {
+    val uncompressedDir = File(context.cacheDir, "hapticlabsplayer_uncompressed")
     if (!uncompressedDir.exists()) {
         uncompressedDir.mkdirs()
     }
@@ -59,9 +59,10 @@ fun getUncompressedAssetPath(assetName: String, context: Context): String {
     }
 
     if (outFile.exists()) {
-        return outFile.absolutePath
+        return outFile
     }
 
+    // Copy the asset to the uncompressed directory
     try {
         val inputStream: InputStream = context.assets.open(assetName)
         val outputStream = FileOutputStream(outFile)
@@ -79,5 +80,5 @@ fun getUncompressedAssetPath(assetName: String, context: Context): String {
         // Handle error
     }
 
-    return outFile.absolutePath
+    return outFile
 }
