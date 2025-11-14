@@ -15,6 +15,7 @@ import android.os.Looper
 import android.os.SystemClock
 import android.os.VibrationEffect
 import android.os.VibrationEffect.WaveformEnvelopeBuilder
+import android.os.Vibrator
 import android.util.Log
 import android.os.vibrator.VibratorEnvelopeEffectInfo
 import android.os.vibrator.VibratorFrequencyProfile
@@ -27,6 +28,9 @@ import com.google.gson.JsonObject
 import androidx.mediarouter.media.MediaRouter
 import com.google.gson.JsonSyntaxException
 import java.io.IOException
+import kotlin.math.abs
+import kotlin.math.min
+import kotlin.math.round
 
 data class HapticCapabilities(
     val supportsOnOff: Boolean,
@@ -205,8 +209,12 @@ class HapticlabsPlayer(private val context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             val isAvailable = HapticGenerator.isAvailable()
             if (isAvailable) {
-                val generator = HapticGenerator.create(mediaPlayer.audioSessionId)
-                generator.setEnabled(false)
+                try {
+                    val generator = HapticGenerator.create(mediaPlayer.audioSessionId)
+                    generator.setEnabled(false)
+                } catch (e: RuntimeException) {
+                    Log.e(TAG, "Failed to create haptic generator to disable it", e)
+                }
             }
         }
 
@@ -371,30 +379,162 @@ class HapticlabsPlayer(private val context: Context) {
         }
     }
 
+    private fun createFadeEffect(
+        durationMs: Long,
+        startAmplitude: Float,
+        endAmplitude: Float,
+    ): AmplitudeWaveform {
+        val pointCount =
+            min(durationMs.toInt(), abs(endAmplitude * 255 - startAmplitude * 255).toInt())
+        val timings = LongArray(pointCount)
+        val amplitudes = IntArray(pointCount)
+
+        var passedDuration = 0L
+        for (i in 0 until pointCount) {
+            timings[i] =
+                round((i + 1).toDouble() * durationMs / pointCount).toLong() - passedDuration
+            passedDuration += timings[i]
+            amplitudes[i] =
+                round(((i + 0.5) / pointCount * (endAmplitude - startAmplitude) + startAmplitude) * 255).toInt()
+        }
+
+        return AmplitudeWaveform(timings, amplitudes, -1, 0)
+    }
+
+    private fun loadPrimitiveFallback(primitive: HapticPrimitive): VibrationEffect? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            return null
+        }
+        return when (primitive.name) {
+            // 12 ms max amplitude
+            "click" -> VibrationEffect.createWaveform(
+                longArrayOf(12),
+                intArrayOf((255 * primitive.scale).toInt()),
+                -1
+            )
+
+            "thud" -> {
+                // 300 ms fading amplitude from 1 to 0
+                val fade = createFadeEffect(300, 1f * primitive.scale, 0f)
+                VibrationEffect.createWaveform(fade.timings, fade.amplitudes, fade.repeat)
+            }
+
+            "spin" -> {
+                // 75 ms fade from 0.5 to 1
+                val fadeUp = createFadeEffect(75, 0.5f * primitive.scale, 1f * primitive.scale)
+                // 75 ms fade from 1 to 0.5
+                val fadeDown = createFadeEffect(75, 1f * primitive.scale, 0.5f * primitive.scale)
+                VibrationEffect.createWaveform(
+                    fadeUp.timings + fadeDown.timings,
+                    fadeUp.amplitudes + fadeDown.amplitudes,
+                    fadeUp.repeat
+                )
+            }
+
+            "quickRise" -> {
+                // 150 ms from 0 to 1
+                val fade = createFadeEffect(150, 0f, 1f * primitive.scale)
+                VibrationEffect.createWaveform(fade.timings, fade.amplitudes, fade.repeat)
+            }
+
+            "slowRise" -> {
+                // 500 ms from 0 to 1
+                val fade = createFadeEffect(500, 0f, 1f * primitive.scale)
+                VibrationEffect.createWaveform(fade.timings, fade.amplitudes, fade.repeat)
+            }
+
+            "quickFall" -> {
+                // 50 ms fade up from 0.5 to 1
+                val fadeUp = createFadeEffect(50, 0.5f * primitive.scale, 1f * primitive.scale)
+                // 50 ms fade down from 1 to 0
+                val fadeDown = createFadeEffect(50, 1f * primitive.scale, 0f)
+                VibrationEffect.createWaveform(
+                    fadeUp.timings + fadeDown.timings,
+                    fadeUp.amplitudes + fadeDown.amplitudes,
+                    fadeUp.repeat
+                )
+            }
+
+            // 5 ms half amplitude
+            "tick" -> VibrationEffect.createWaveform(
+                longArrayOf(5),
+                intArrayOf((255 * primitive.scale / 2).toInt()),
+                -1
+            )
+
+            // 12 ms quarter amplitude
+            "lowtick" -> VibrationEffect.createWaveform(
+                longArrayOf(12),
+                intArrayOf((255 * primitive.scale / 4).toInt()),
+                -1
+            )
+
+            else -> null
+        }
+    }
+
     private fun loadPrimitives(primitives: List<HapticPrimitive>): List<LoadedEffect> {
         return if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
-            // @TODO Need to fallback here
             Log.w(TAG, "Primitives are not supported on this SDK version, falling back.")
-            emptyList()
+            primitives.mapNotNull {
+                loadPrimitiveFallback(it)?.let { vibrationEffect ->
+                    LoadedEffect(vibrationEffect, it.startOffset)
+                }
+            }
         } else {
-            primitives.map {
-                LoadedEffect(
-                    VibrationEffect.startComposition().addPrimitive(
-                        when (it.name) {
-                            "click" -> VibrationEffect.Composition.PRIMITIVE_CLICK
-                            "thud" -> VibrationEffect.Composition.PRIMITIVE_THUD
-                            "spin" -> VibrationEffect.Composition.PRIMITIVE_SPIN
-                            "quickRise" -> VibrationEffect.Composition.PRIMITIVE_QUICK_RISE
-                            "slowRise" -> VibrationEffect.Composition.PRIMITIVE_SLOW_RISE
-                            "quickFall" -> VibrationEffect.Composition.PRIMITIVE_QUICK_FALL
-                            "tick" -> VibrationEffect.Composition.PRIMITIVE_TICK
-                            "lowTick" -> VibrationEffect.Composition.PRIMITIVE_LOW_TICK
-                            // Default to click if the name is unknown
-                            else -> VibrationEffect.Composition.PRIMITIVE_CLICK
-                        }, it.scale
-                    ).compose(),
-                    it.startOffset
-                )
+            primitives.mapNotNull {
+                // Map the string to the primitive id
+                val primitiveId = when (it.name) {
+                    "click" -> VibrationEffect.Composition.PRIMITIVE_CLICK
+                    "thud" -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        VibrationEffect.Composition.PRIMITIVE_THUD
+                    } else {
+                        null
+                    }
+
+                    "spin" -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        VibrationEffect.Composition.PRIMITIVE_SPIN
+                    } else {
+                        null
+                    }
+
+                    "quickRise" -> VibrationEffect.Composition.PRIMITIVE_QUICK_RISE
+                    "slowRise" -> VibrationEffect.Composition.PRIMITIVE_SLOW_RISE
+                    "quickFall" -> VibrationEffect.Composition.PRIMITIVE_QUICK_FALL
+                    "tick" -> VibrationEffect.Composition.PRIMITIVE_TICK
+                    "lowTick" -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        VibrationEffect.Composition.PRIMITIVE_LOW_TICK
+                    } else {
+                        null
+                    }
+                    // Default to click if the name is unknown
+                    else -> null
+                }
+
+                (primitiveId?.let { primitiveId ->
+                    // Check if the effect is supported
+                    if (getVibrator(context).areEffectsSupported(primitiveId)[0] == Vibrator.VIBRATION_EFFECT_SUPPORT_YES) {
+                        VibrationEffect.startComposition().addPrimitive(
+                            primitiveId, it.scale
+                        ).compose()
+                    } else {
+                        // Effect not supported
+                        Log.w(
+                            TAG,
+                            "Primitive ${it.name} is not supported on this device, falling back."
+                        )
+                        loadPrimitiveFallback(it)
+                    }
+                } ?: run {
+                    // Effect not identified
+                    Log.w(
+                        TAG,
+                        "Primitive ${it.name} is not known in this SDK version, falling back."
+                    )
+                    loadPrimitiveFallback(it)
+                })?.let { vibrationEffect ->
+                    LoadedEffect(vibrationEffect, it.startOffset)
+                }
             }
         }
     }
@@ -474,7 +614,10 @@ class HapticlabsPlayer(private val context: Context) {
                     it.startOffset
                 )
             } ?: run {
-                Log.e(TAG, "Failed to find audio file: ${it.filename} in directory: $audioDirectory")
+                Log.e(
+                    TAG,
+                    "Failed to find audio file: ${it.filename} in directory: $audioDirectory"
+                )
                 null
             }
         }
