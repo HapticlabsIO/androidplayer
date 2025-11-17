@@ -180,6 +180,8 @@ data class LoadedHLA(
 class HapticlabsPlayer(private val context: Context) {
     private val TAG = "HapticlabsPlayer"
 
+    private val CACHE_SUBDIRECTORY = "hapticlabsPlayerCache"
+
     val hapticsCapabilities = determineHapticCapabilities()
 
     private var mediaPlayer: MediaPlayer
@@ -227,37 +229,37 @@ class HapticlabsPlayer(private val context: Context) {
         // Listen for device speaker selection to determine whether or not haptic playback must
         // be routed to the device speaker explicitly
         handler = Handler(Looper.getMainLooper())
-        handler.post(
-            Runnable {
-                val mediaRouter = MediaRouter.getInstance(context)
-                val selector = MediaRouteSelector.Builder()
-                    .addControlCategory(MediaControlIntent.CATEGORY_LIVE_AUDIO)
-                    .build()
+        handler.post {
+            val mediaRouter = MediaRouter.getInstance(context)
+            val selector = MediaRouteSelector.Builder()
+                .addControlCategory(MediaControlIntent.CATEGORY_LIVE_AUDIO)
+                .build()
 
-                val mediaRouterCallback = object : MediaRouter.Callback() {
-                    override fun onRouteSelected(
-                        router: MediaRouter,
-                        route: MediaRouter.RouteInfo
-                    ) {
-                        isBuiltInSpeakerSelected = router.selectedRoute.isDeviceSpeaker
-                    }
-
-                    override fun onRouteUnselected(
-                        router: MediaRouter,
-                        route: MediaRouter.RouteInfo
-                    ) {
-                        isBuiltInSpeakerSelected = router.selectedRoute.isDeviceSpeaker
-                    }
-
-                    override fun onRouteChanged(router: MediaRouter, route: MediaRouter.RouteInfo) {
-                        isBuiltInSpeakerSelected = router.selectedRoute.isDeviceSpeaker
-                    }
+            val mediaRouterCallback = object : MediaRouter.Callback() {
+                override fun onRouteSelected(
+                    router: MediaRouter,
+                    route: MediaRouter.RouteInfo
+                ) {
+                    isBuiltInSpeakerSelected = router.selectedRoute.isDeviceSpeaker
                 }
 
-                // 4. Add MediaRouter.Callback
-                mediaRouter.addCallback(selector, mediaRouterCallback)
+                override fun onRouteUnselected(
+                    router: MediaRouter,
+                    route: MediaRouter.RouteInfo
+                ) {
+                    isBuiltInSpeakerSelected = router.selectedRoute.isDeviceSpeaker
+                }
+
+                override fun onRouteChanged(router: MediaRouter, route: MediaRouter.RouteInfo) {
+                    isBuiltInSpeakerSelected = router.selectedRoute.isDeviceSpeaker
+                }
             }
-        )
+
+            // 4. Add MediaRouter.Callback
+            mediaRouter.addCallback(selector, mediaRouterCallback)
+        }
+
+        ZipCacheManager.dropInvalidCachesIn(context, CACHE_SUBDIRECTORY)
     }
 
     private fun setUpSoundPool() {
@@ -346,6 +348,7 @@ class HapticlabsPlayer(private val context: Context) {
                 val hlaFile = File(hlaDirectoryPath, "main.hla")
                 return loadHLAImpl(
                     PossiblyZippedDirectory(
+                        CACHE_SUBDIRECTORY,
                         hlaDirectoryPath.absolutePath,
                         false,
                         context
@@ -360,6 +363,7 @@ class HapticlabsPlayer(private val context: Context) {
                 val hlaFile = File(hlaDirectoryPath, "main.hla")
                 return loadHLAImpl(
                     PossiblyZippedDirectory(
+                        CACHE_SUBDIRECTORY,
                         hlaDirectoryPath.absolutePath,
                         false,
                         context
@@ -789,7 +793,9 @@ class HapticlabsPlayer(private val context: Context) {
     fun playHLA(hlaPath: String, completionCallback: () -> Unit) {
         val uncompressedPath = getUncompressedPath(hlaPath, context)
         File(hlaPath).parent?.let {
-            val parentDir = PossiblyZippedDirectory(it, false, context)
+            val parentDir = PossiblyZippedDirectory(
+                CACHE_SUBDIRECTORY, it, false, context
+            )
             loadHLAImpl(parentDir, uncompressedPath) { loadedHLA ->
                 playLoadedHLA2(loadedHLA, completionCallback)
             }
@@ -801,7 +807,9 @@ class HapticlabsPlayer(private val context: Context) {
     }
 
     private fun loadHAC(hacPath: String, completionCallback: (loadedHLA: LoadedHLA) -> Unit) {
-        val hacDirectory = PossiblyZippedDirectory(hacPath, true, context)
+        val hacDirectory = PossiblyZippedDirectory(
+            CACHE_SUBDIRECTORY, hacPath, true, context
+        )
         val hlaFile = hacDirectory.getChild("main.hla")
         hlaFile?.let {
             loadHLAImpl(hacDirectory, it, completionCallback)
@@ -987,10 +995,10 @@ class HapticlabsPlayer(private val context: Context) {
         uncompressedPath: String
     ): LoadedOGG? {
         // Check if it's already loaded
-        poolMap[uncompressedPath]?.let {
+        return poolMap[uncompressedPath]?.let {
             // Already loading or loaded
-            return if (loadedSoundsSet.contains(it.soundId)) it else null
-        } ?: return null
+            if (loadedSoundsSet.contains(it.soundId)) it else null
+        }
     }
 
     private fun loadOGG(

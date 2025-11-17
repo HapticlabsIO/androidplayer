@@ -7,12 +7,17 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InputStream
+import java.security.MessageDigest
+import java.util.Properties
 import java.util.zip.ZipInputStream
 
 object ZipCacheManager {
 
     private const val TAG = "ZipCacheManager"
     private const val SUCCESS_MARKER_FILE = ".success"
+
+    private const val HASH_KEY = "source_hash"
+    private const val PATH_KEY = "source_path"
 
     /**
      * Smart-unzips a file from either the assets folder or a fully qualified path.
@@ -26,90 +31,126 @@ object ZipCacheManager {
      */
     fun unzipIfNeeded(path: String, context: Context, cacheDirName: String): File? {
         // A simple heuristic: if the path contains a separator, it's treated as a full path.
-        // Otherwise, it's treated as an asset name.
-        return if (path.startsWith(File.separator)) {
-            unzipFromPathIfNeeded(path, context, cacheDirName)
-        } else {
-            unzipFromAssetsIfNeeded(path, context, cacheDirName)
+        return unzipSourceIfNeeded(path, context, cacheDirName)
+    }
+
+    /**
+     * Checks the directory for cache validity.
+     * Invalid caches (outdated or missing) are removed.
+     *
+     * @param source The name of the zip file in 'assets' (e.g., "data.zip") OR a fully qualified path (e.g., "/sdcard/data.zip").
+     * @param cachedDirectory The directory to check.
+     * @param context The application context.
+     *
+     */
+    fun dropIfInvalidCache(cachedDirectory: File, context: Context) {
+        if (!isCacheValid(context, cachedDirectory)) {
+            Log.d(TAG, "Cache at '${cachedDirectory.path}' is outdated (hash mismatch). Removing.")
+            cachedDirectory.deleteRecursively()
         }
     }
 
     /**
-     * Unzips a file from the assets folder into a specific cache directory.
-     * If the content is already cached and up-to-date, this method does nothing.
+     * Traverses a specific subdirectory within the app's cache and removes any invalid caches found within it.
+     * A cache is considered invalid if its source file is no longer present,
+     * or if the source file's hash has changed. This function will not touch files or directories
+     * outside of the specified `cacheSubDirName`.
      *
-     * @param assetZipFileName The name of the zip file in the 'assets' folder (e.g., "my_data.zip").
-     * @param cacheDirName The name of the subdirectory to create in the app's cache (e.g., "my_data_cache").
-     * @return The File object pointing to the cache directory where contents are located.
+     * @param context The application context.
+     * @param cacheSubDirName The name of the subdirectory within the app's cache to scan.
      */
-    fun unzipFromAssetsIfNeeded(
-        assetZipFileName: String,
+    fun dropInvalidCachesIn(context: Context, cacheSubDirName: String) {
+        val subDir = File(context.cacheDir, cacheSubDirName)
+        if (!subDir.exists() || !subDir.isDirectory) {
+            return
+        }
+
+        subDir.listFiles()?.forEach { file ->
+            // We only care about directories, as our cache logic creates subdirectories.
+            if (file.isDirectory) {
+                dropIfInvalidCache(file, context)
+            }
+        }
+    }
+
+    private fun unzipSourceIfNeeded(
+        sourcePath: String,
         context: Context,
         cacheDirName: String
     ): File? {
         val cacheDir = File(context.cacheDir, cacheDirName)
-        if (isCacheValid(cacheDir)) {
+        if (isCacheValid(context, cacheDir, sourcePath)) {
             Log.d(TAG, "Cache is valid for '$cacheDirName'. Skipping unzip.")
             return cacheDir
         }
 
-        Log.d(TAG, "Cache is invalid or missing for '$cacheDirName'. Unzipping from assets...")
+        Log.d(
+            TAG,
+            "Cache is invalid or missing for '$cacheDirName'. Unzipping from '$sourcePath'..."
+        )
         prepareCacheDirectory(cacheDir)
 
         return try {
-            context.assets.open(assetZipFileName).use { inputStream ->
-                unzip(inputStream, cacheDir)
+            val inputStream = when {
+                isPath(sourcePath) -> FileInputStream(File(sourcePath))
+                else -> context.assets.open(sourcePath)
             }
+            inputStream.use { stream -> unzip(stream, cacheDir, sourcePath, context) }
             cacheDir
         } catch (e: IOException) {
-            Log.e(TAG, "Failed to open asset file '$assetZipFileName'", e)
+            Log.e(TAG, "Failed to open or unzip source '$sourcePath'", e)
             cleanupFailedAttempt(cacheDir)
             null
         }
     }
 
-    /**
-     * Unzips a file from a fully qualified path into a specific cache directory.
-     * If the content is already cached and up-to-date, this method does nothing.
-     *
-     * @param zipFilePath The fully qualified path to the zip file (e.g., "/sdcard/Download/my_data.zip").
-     * @param context The application context.
-     * @param cacheDirName The name of the subdirectory to create in the app's cache (e.g., "my_data_cache").
-     * @return The File object pointing to the cache directory where contents are located.
-     */
-    fun unzipFromPathIfNeeded(zipFilePath: String, context: Context, cacheDirName: String): File? {
-        val zipFile =
-            File(zipFilePath) // Note: context is passed for consistency but not used here for file path ops
-        if (!zipFile.exists()) {
-            Log.e(TAG, "Zip file does not exist at path: $zipFilePath")
-            return null
+    private fun isCacheValid(
+        context: Context,
+        cacheDir: File,
+        sourcePath: String? = null
+    ): Boolean {
+        val propertiesFile = File(cacheDir, SUCCESS_MARKER_FILE)
+        if (!cacheDir.exists() || !propertiesFile.exists()) {
+            return false
         }
 
-        val cacheDir = File(context.cacheDir, cacheDirName)
-        if (isCacheValid(cacheDir)) {
-            Log.d(TAG, "Cache is valid for '$cacheDirName'. Skipping unzip.")
-            return cacheDir
-        }
-
-        Log.d(TAG, "Cache is invalid or missing for '$cacheDirName'. Unzipping from path...")
-        prepareCacheDirectory(cacheDir)
-
-        return try {
-            FileInputStream(zipFile).use { inputStream ->
-                unzip(inputStream, cacheDir)
-            }
-            cacheDir
+        val properties = Properties()
+        try {
+            properties.load(FileInputStream(propertiesFile))
         } catch (e: IOException) {
-            Log.e(TAG, "Failed to open file from path '$zipFilePath'", e)
-            cleanupFailedAttempt(cacheDir)
-            null
+            Log.w(TAG, "Could not read cache properties file. Assuming invalid.", e)
+            return false
         }
+
+        val cachedHash = properties.getProperty(HASH_KEY)
+        val cachedPath = properties.getProperty(PATH_KEY)
+        if (cachedHash == null || cachedPath == null) {
+            return false // Invalid properties
+        }
+
+        // For non-asset paths, check if the source file still exists.
+        if (isPath(cachedPath) && !File(cachedPath).exists()) {
+            Log.d(TAG, "Source file for cache '$cachedPath' has been removed. Invalidating cache.")
+            return false
+        }
+
+        // If a source path is provided, we must also check that it matches the cached path.
+        // This handles cases where the same cache directory name is reused for a different source file.
+        if (sourcePath != null && sourcePath != cachedPath) {
+            Log.d(
+                TAG,
+                "Cache source path mismatch. Expected '$sourcePath', found '$cachedPath'. Invalidating cache."
+            )
+            return false
+        }
+
+        val currentHash = computeSourceHash(cachedPath, context)
+
+        return currentHash == cachedHash
     }
 
-    private fun isCacheValid(cacheDir: File): Boolean {
-        val successMarker = File(cacheDir, SUCCESS_MARKER_FILE)
-        return cacheDir.exists() && successMarker.exists()
-    }
+    private fun isPath(path: String) = path.startsWith(File.separator)
+
 
     private fun prepareCacheDirectory(cacheDir: File) {
         if (cacheDir.exists()) {
@@ -127,7 +168,12 @@ object ZipCacheManager {
     /**
      * Core logic to unzip an InputStream into a destination directory.
      */
-    private fun unzip(inputStream: InputStream, destinationDir: File) {
+    private fun unzip(
+        inputStream: InputStream,
+        destinationDir: File,
+        sourcePath: String,
+        context: Context
+    ) {
         try {
             ZipInputStream(inputStream.buffered()).use { zipInputStream ->
                 var zipEntry = zipInputStream.nextEntry
@@ -146,12 +192,20 @@ object ZipCacheManager {
                     zipEntry = zipInputStream.nextEntry
                 }
             }
-            // If we reach here, unzipping was successful. Create the marker file.
-            val successMarker = File(destinationDir, SUCCESS_MARKER_FILE)
-            successMarker.createNewFile()
+            // If we reach here, unzipping was successful. Create the marker file with hash and path.
+            val currentHash = computeSourceHash(sourcePath, context) ?: run {
+                throw IOException("Could not compute hash for $sourcePath")
+            }
+
+            val properties = Properties()
+            properties.setProperty(HASH_KEY, currentHash)
+            properties.setProperty(PATH_KEY, sourcePath)
+
+            val propertiesFile = File(destinationDir, SUCCESS_MARKER_FILE)
+            properties.store(FileOutputStream(propertiesFile), "Cache metadata")
             Log.d(
                 TAG,
-                "Successfully unzipped and created success marker in '${destinationDir.name}'."
+                "Successfully unzipped and created success marker in '${destinationDir.name}' for source '$sourcePath'."
             )
         } catch (e: IOException) {
             Log.e(TAG, "Unzip operation failed for directory '${destinationDir.name}'", e)
@@ -159,28 +213,66 @@ object ZipCacheManager {
             throw e
         }
     }
+
+    private fun computeSourceHash(sourcePath: String, context: Context): String? {
+        return if (isPath(sourcePath)) {
+            computeFileHash(File(sourcePath))
+        } else {
+            computeAssetHash(sourcePath, context)
+        }
+    }
+
+    private fun computeAssetHash(assetName: String, context: Context): String? {
+        return try {
+            context.assets.open(assetName).use { computeStreamHash(it) }
+        } catch (e: IOException) {
+            Log.w(TAG, "Failed to compute hash for asset '$assetName'", e)
+            null
+        }
+    }
+
+    private fun computeFileHash(file: File): String? {
+        return if (!file.exists()) null else
+            try {
+                FileInputStream(file).use { computeStreamHash(it) }
+            } catch (e: IOException) {
+                Log.e(TAG, "Failed to compute hash for file '${file.path}'", e)
+                null
+            }
+    }
+
+    private fun computeStreamHash(inputStream: InputStream): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        val buffer = ByteArray(8192)
+        var bytesRead: Int
+        while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+            digest.update(buffer, 0, bytesRead)
+        }
+        return digest.digest().fold("") { str, it -> str + "%02x".format(it) }
+    }
 }
 
 /**
  * Represents a directory that may or may not be a zip file.
  * Provides a unified way to access child files, extracting them from a zip archive if necessary.
  *
- * @param directory The file that is either a directory or a zip file.
+ * @param source The file that is either a directory or a zip file.
  */
 class PossiblyZippedDirectory(
-    private val directory: String,
+    private val cacheSubDirName: String,
+    private val source: String,
     private val isZip: Boolean,
     private val context: Context
 ) {
     private val effectiveDirectory: File? = if (isZip) {
         // Use the zip file name without extension as the cache directory name
-        val cacheDirName = File(directory).nameWithoutExtension
-        ZipCacheManager.unzipIfNeeded(directory, context, cacheDirName)
+        val cacheDirName = File(cacheSubDirName, File(source).nameWithoutExtension)
+        ZipCacheManager.unzipIfNeeded(source, context, cacheDirName.path)
     } else {
-        File(directory)
+        File(source)
     }
 
-    private val isAssetDirectory = !isZip && !directory.startsWith(File.separator)
+    private val isAssetDirectory = !isZip && !source.startsWith(File.separator)
 
     fun getChild(childName: String): File? {
         val childFile = effectiveDirectory?.let {
