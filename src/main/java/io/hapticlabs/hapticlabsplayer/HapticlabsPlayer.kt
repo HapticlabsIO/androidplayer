@@ -19,6 +19,7 @@ import android.os.Vibrator
 import android.util.Log
 import android.os.vibrator.VibratorEnvelopeEffectInfo
 import android.os.vibrator.VibratorFrequencyProfile
+import androidx.annotation.RequiresApi
 import androidx.mediarouter.media.MediaControlIntent
 import androidx.mediarouter.media.MediaRouteSelector
 import java.io.File
@@ -87,6 +88,13 @@ data class PWLEPoint(
     val time: Long
 )
 
+data class BasicPWLEPoint(
+    val priority: Int,
+    val sharpness: Float,
+    val intensity: Float,
+    val time: Long
+)
+
 data class AmplitudeWaveform(
     val timings: LongArray,
     val amplitudes: IntArray,
@@ -111,6 +119,11 @@ data class PWLEEnvelope(
     override val startOffset: Long
 ) : HasOffset
 
+data class BasicPWLEEnvelope(
+    val initialSharpness: Float,
+    val points: List<BasicPWLEPoint>,
+    override val startOffset: Long
+) : HasOffset
 
 data class WaveformSignal(
     val primitives: List<HapticPrimitive>,
@@ -134,6 +147,7 @@ data class PWLESignal(
     val amplitudes: List<AmplitudeWaveform>,
     val oggs: List<OGGFile>,
     val envelopes: List<PWLEEnvelope>,
+    val basicEnvelopes: List<BasicPWLEEnvelope>,
     override val duration: Long,
     override val requiredAudioFiles: List<String>,
     override val audios: List<HlaAudio>
@@ -557,50 +571,68 @@ class HapticlabsPlayer(private val context: Context) {
         }
     }
 
-    private fun loadPWLEWaveforms(pwles: List<PWLEEnvelope>): List<LoadedEffect> {
-        // Extracting envelopes array
-        return if (Build.VERSION.SDK_INT < Build.VERSION_CODES.BAKLAVA
-            || ((
-                    hapticsCapabilities.envelopeEffectInfo?.maxSize
-                        ?: 0) <= 0)
-        ) {
-            Log.e(TAG, "No envelope effects supported on this device")
-            emptyList<LoadedEffect>()
-        } else {
-            pwles.map { envelopeData ->
-                val startFrequency = envelopeData.initialFrequency.coerceIn(
-                    hapticsCapabilities.frequencyResponse?.minFrequencyHz ?: 0f,
-                    hapticsCapabilities.frequencyResponse?.maxFrequencyHz ?: 500f
+    @RequiresApi(Build.VERSION_CODES.BAKLAVA)
+    private fun <T : HasOffset, P> loadEnvelopes(
+        envelopes: List<T>,
+        getPoints: (T) -> List<P>,
+        getPriority: (P) -> Int,
+        buildEffect: (T, List<P>) -> VibrationEffect
+    ): List<LoadedEffect> {
+        val maxSize = hapticsCapabilities.envelopeEffectInfo?.maxSize ?: 0
+
+        return envelopes.map { envelopeData ->
+            val relevantPoints = getPoints(envelopeData).filter { getPriority(it) < maxSize }
+            LoadedEffect(buildEffect(envelopeData, relevantPoints), envelopeData.startOffset)
+        }
+    }
+
+    private fun loadBasicPWLEWaveforms(pwles: List<BasicPWLEEnvelope>): List<LoadedEffect> {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.BAKLAVA) {
+            Log.e(TAG, "No basic PWLE effects supported on this device")
+            return emptyList()
+        }
+
+        return loadEnvelopes(pwles, { it.points }, { it.priority }) { envelopeData, points ->
+            val envelope = VibrationEffect.BasicEnvelopeBuilder()
+                .setInitialSharpness(envelopeData.initialSharpness)
+            var currentTimeInEnvelope = 0L
+
+            points.forEach { p ->
+                envelope.addControlPoint(
+                    p.intensity,
+                    p.sharpness,
+                    p.time - currentTimeInEnvelope
                 )
-
-                // Filter those points that have a priority < max supported point count
-                val mostRelevantPoints = envelopeData.points.filter { point ->
-                    point.priority < (
-                            hapticsCapabilities.envelopeEffectInfo?.maxSize
-                                ?: 0)
-                }
-
-                val envelope = WaveformEnvelopeBuilder().setInitialFrequencyHz(startFrequency)
-                var currentTimeInEnvelope = 0L
-
-                mostRelevantPoints.forEach { p ->
-                    val safeFrequency = p.frequency.coerceIn(
-                        hapticsCapabilities.frequencyResponse?.minFrequencyHz ?: 0f,
-                        hapticsCapabilities.frequencyResponse?.maxFrequencyHz ?: 500f
-                    )
-
-                    envelope.addControlPoint(
-                        p.amplitude,
-                        safeFrequency,
-                        p.time - currentTimeInEnvelope
-                    )
-                    currentTimeInEnvelope = p.time
-                }
-
-                LoadedEffect(
-                    envelope.build(), envelopeData.startOffset
-                )
+                currentTimeInEnvelope = p.time
             }
+            envelope.build()
+        }
+    }
+
+    private fun loadPWLEWaveforms(pwles: List<PWLEEnvelope>): List<LoadedEffect> {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.BAKLAVA) {
+            Log.e(TAG, "No PWLE effects supported on this device")
+            return emptyList()
+        }
+
+        return loadEnvelopes(pwles, { it.points }, { it.priority }) { envelopeData, points ->
+            val minFreq = hapticsCapabilities.frequencyResponse?.minFrequencyHz ?: 0f
+            val maxFreq = hapticsCapabilities.frequencyResponse?.maxFrequencyHz ?: 500f
+
+            val startFrequency = envelopeData.initialFrequency.coerceIn(minFreq, maxFreq)
+            val envelope = WaveformEnvelopeBuilder().setInitialFrequencyHz(startFrequency)
+            var currentTimeInEnvelope = 0L
+
+            points.forEach { p ->
+                val safeFrequency = p.frequency.coerceIn(minFreq, maxFreq)
+                envelope.addControlPoint(
+                    p.amplitude,
+                    safeFrequency,
+                    p.time - currentTimeInEnvelope
+                )
+                currentTimeInEnvelope = p.time
+            }
+            envelope.build()
         }
     }
 
@@ -689,9 +721,10 @@ class HapticlabsPlayer(private val context: Context) {
             4 -> {
                 completionCallback(
                     LoadedHLA(
-                        loadPrimitives(hla.pwleSignal.primitives) + loadAmplitudeWaveforms(hla.pwleSignal.amplitudes) + loadPWLEWaveforms(
-                            hla.pwleSignal.envelopes
-                        ),
+                        loadPrimitives(hla.pwleSignal.primitives)
+                                + loadAmplitudeWaveforms(hla.pwleSignal.amplitudes)
+                                + loadPWLEWaveforms(hla.pwleSignal.envelopes)
+                                + loadBasicPWLEWaveforms(hla.pwleSignal.basicEnvelopes),
                         loadAudios(resourcesDirectoryPath, hla.pwleSignal.audios),
                         loadOGGs(resourcesDirectoryPath, hla.pwleSignal.oggs),
                         hla.pwleSignal.duration
@@ -748,6 +781,7 @@ class HapticlabsPlayer(private val context: Context) {
                 PWLESignal(
                     emptyList(),
                     listOf(amplitudeWaveform),
+                    emptyList(),
                     emptyList(),
                     emptyList(),
                     hla.Duration,
@@ -956,22 +990,22 @@ class HapticlabsPlayer(private val context: Context) {
         }
     }
 
-    fun unload(directoryPath: String) {
-        if (directoryPath.endsWith(HAC_EXTENSION)) {
-            hacMap[directoryPath]?.let {
+    fun unload(directoryOrHacPath: String) {
+        if (directoryOrHacPath.endsWith(HAC_EXTENSION)) {
+            hacMap[directoryOrHacPath]?.let {
                 // Unload the included oggs
                 it.oggs.forEach { ogg ->
                     unloadUncompressedPathOGG(ogg.uncompressedPath)
                 }
 
                 // Remove from the preload map
-                hacMap.remove(directoryPath)
+                hacMap.remove(directoryOrHacPath)
             } ?: {
-                Log.w(TAG, "Tried to unload a non-loaded .hac file: $directoryPath")
+                Log.w(TAG, "Tried to unload a non-loaded .hac file: $directoryOrHacPath")
             }
         } else {
             // Legacy directory approach
-            unloadOGG(directoryPathToOGG(directoryPath))
+            unloadOGG(directoryPathToOGG(directoryOrHacPath))
         }
     }
 
@@ -1133,7 +1167,6 @@ class HapticlabsPlayer(private val context: Context) {
             completionCallback()
         }
     }
-
 
     fun playBuiltIn(name: String) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
