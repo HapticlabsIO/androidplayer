@@ -580,9 +580,13 @@ class HapticlabsPlayer(private val context: Context) {
     ): List<LoadedEffect> {
         val maxSize = hapticsCapabilities.envelopeEffectInfo?.maxSize ?: 0
 
-        return envelopes.map { envelopeData ->
+        return envelopes.mapNotNull { envelopeData ->
             val relevantPoints = getPoints(envelopeData).filter { getPriority(it) < maxSize }
-            LoadedEffect(buildEffect(envelopeData, relevantPoints), envelopeData.startOffset)
+            if (relevantPoints.isEmpty()){
+                null
+            } else {
+                LoadedEffect(buildEffect(envelopeData, relevantPoints), envelopeData.startOffset)
+            }
         }
     }
 
