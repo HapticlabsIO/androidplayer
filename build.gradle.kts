@@ -6,6 +6,7 @@ plugins {
     `maven-publish`
     alias(libs.plugins.jreleaser)
     signing
+    alias(libs.plugins.ksp)
 }
 
 android {
@@ -123,5 +124,6 @@ dependencies {
     testImplementation(libs.junit)
     androidTestImplementation(libs.ext.junit)
     androidTestImplementation(libs.espresso.core)
-    implementation(libs.gson)
+    implementation(libs.moshi)
+    ksp(libs.moshi.kotlin.codegen)
 }

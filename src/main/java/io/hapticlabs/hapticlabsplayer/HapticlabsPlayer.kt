@@ -24,10 +24,9 @@ import androidx.mediarouter.media.MediaControlIntent
 import androidx.mediarouter.media.MediaRouteSelector
 import java.io.File
 import java.nio.charset.StandardCharsets
-import com.google.gson.Gson
-import com.google.gson.JsonObject
 import androidx.mediarouter.media.MediaRouter
-import com.google.gson.JsonSyntaxException
+import com.squareup.moshi.JsonClass
+import com.squareup.moshi.Moshi
 import java.io.IOException
 import kotlin.math.abs
 import kotlin.math.min
@@ -45,11 +44,13 @@ data class HapticCapabilities(
     val hapticSupportLevel: Int
 )
 
+@JsonClass(generateAdapter = true)
 data class LegacyHlaAudio(
     val Time: Int,
     val Filename: String
 )
 
+@JsonClass(generateAdapter = true)
 // Original HLA format before v2
 data class LegacyHLA(
     val ProjectName: String,
@@ -71,6 +72,7 @@ interface HasOffset {
     val startOffset: Long
 }
 
+@JsonClass(generateAdapter = true)
 data class HlaAudio(
     override val startOffset: Long,
     val filename: String
@@ -81,6 +83,7 @@ interface ReferencesAudio {
     val requiredAudioFiles: List<String>
 }
 
+@JsonClass(generateAdapter = true)
 data class PWLEPoint(
     val priority: Int,
     val frequency: Float,
@@ -88,6 +91,7 @@ data class PWLEPoint(
     val time: Long
 )
 
+@JsonClass(generateAdapter = true)
 data class BasicPWLEPoint(
     val priority: Int,
     val sharpness: Float,
@@ -95,6 +99,7 @@ data class BasicPWLEPoint(
     val time: Long
 )
 
+@JsonClass(generateAdapter = true)
 data class AmplitudeWaveform(
     val timings: LongArray,
     val amplitudes: IntArray,
@@ -102,29 +107,34 @@ data class AmplitudeWaveform(
     override val startOffset: Long
 ) : HasOffset
 
+@JsonClass(generateAdapter = true)
 data class HapticPrimitive(
     val name: String,
     val scale: Float,
     override val startOffset: Long
 ) : HasOffset
 
+@JsonClass(generateAdapter = true)
 data class OGGFile(
     val name: String,
     override val startOffset: Long
 ) : HasOffset
 
+@JsonClass(generateAdapter = true)
 data class PWLEEnvelope(
     val initialFrequency: Float,
     val points: List<PWLEPoint>,
     override val startOffset: Long
 ) : HasOffset
 
+@JsonClass(generateAdapter = true)
 data class BasicPWLEEnvelope(
     val initialSharpness: Float,
     val points: List<BasicPWLEPoint>,
     override val startOffset: Long
 ) : HasOffset
 
+@JsonClass(generateAdapter = true)
 data class WaveformSignal(
     val primitives: List<HapticPrimitive>,
     val amplitudes: List<AmplitudeWaveform>,
@@ -133,6 +143,7 @@ data class WaveformSignal(
     override val audios: List<HlaAudio>
 ) : HasDuration, ReferencesAudio
 
+@JsonClass(generateAdapter = true)
 data class OGGSignal(
     val primitives: List<HapticPrimitive>,
     val amplitudes: List<AmplitudeWaveform>,
@@ -142,6 +153,7 @@ data class OGGSignal(
     override val audios: List<HlaAudio>
 ) : HasDuration, ReferencesAudio
 
+@JsonClass(generateAdapter = true)
 data class PWLESignal(
     val primitives: List<HapticPrimitive>,
     val amplitudes: List<AmplitudeWaveform>,
@@ -153,6 +165,7 @@ data class PWLESignal(
     override val audios: List<HlaAudio>
 ) : HasDuration, ReferencesAudio
 
+@JsonClass(generateAdapter = true)
 data class HLA2(
     val version: Int,
     val projectName: String,
@@ -582,7 +595,7 @@ class HapticlabsPlayer(private val context: Context) {
 
         return envelopes.mapNotNull { envelopeData ->
             val relevantPoints = getPoints(envelopeData).filter { getPriority(it) < maxSize }
-            if (relevantPoints.isEmpty()){
+            if (relevantPoints.isEmpty()) {
                 null
             } else {
                 LoadedEffect(buildEffect(envelopeData, relevantPoints), envelopeData.startOffset)
@@ -879,30 +892,34 @@ class HapticlabsPlayer(private val context: Context) {
         val data = hlaFile.readText(StandardCharsets.UTF_8)
 
         // Parse the file to a JSON
-        val gson = Gson()
-        val jsonObject = gson.fromJson(data, JsonObject::class.java)
+        val moshi = Moshi.Builder().build()
+        val genericJSONAdapter = moshi.adapter(Map::class.java)
 
-        if (jsonObject.has("version")) {
-            if (jsonObject.get("version").asInt != 2) {
-                // Invalid version
-                Log.e(TAG, "Unknown HLA version: ${jsonObject.get("version").asInt}")
-                return
-            }
-            // It's an HLA2 file
-            try {
-                val hla2 = gson.fromJson(jsonObject, HLA2::class.java)
+        try {
+            val jsonObject = genericJSONAdapter.fromJson(data) ?: emptyMap<String, Any>()
+            val version = (jsonObject["version"] as? Number)?.toInt()
+            if (version != null) {
+                if (version != 2) {
+                    // Invalid version
+                    throw Exception("Unknown HLA version: $version")
+                }
+                // It's an HLA2 file
+                val hla2Adapter = moshi.adapter(HLA2::class.java)
+                val hla2 = hla2Adapter.fromJson(data)
+                    ?: throw Exception("Failed to parse the file as HLA2")
+
                 loadHLA2(audioDirectoryPath, hla2, completionCallback)
-            } catch (e: JsonSyntaxException) {
-                Log.e(TAG, "Failed to parse the file as HLA2", e)
-            }
-        } else {
-            // It's likely a LegacyHLA file
-            try {
-                val legacyHLA = gson.fromJson(data, LegacyHLA::class.java)
+            } else {
+                // It's likely a LegacyHLA file
+                val legacyHLAAdapter = moshi.adapter(LegacyHLA::class.java)
+                val legacyHLA = legacyHLAAdapter.fromJson(data)
+                    ?: throw Exception("Failed to parse the file as LegacyHLA")
                 loadLegacyHLA(audioDirectoryPath, legacyHLA, completionCallback)
-            } catch (e: JsonSyntaxException) {
-                Log.e(TAG, "Failed to parse the file as LegacyHLA", e)
             }
+        } catch (e: Exception) {
+            // Failed to parse the file
+            Log.e(TAG, "Failed to parse the HLA file", e)
+            completionCallback(LoadedHLA(emptyList(), emptyList(), emptyList(), 0))
         }
     }
 
