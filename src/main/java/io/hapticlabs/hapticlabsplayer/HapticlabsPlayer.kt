@@ -81,14 +81,14 @@ data class HapticCapabilities(
 )
 
 @JsonClass(generateAdapter = true)
-private data class LegacyHlaAudio(
+internal data class LegacyHlaAudio(
     val Time: Int,
     val Filename: String
 )
 
 @JsonClass(generateAdapter = true)
 // Original HLA format before v2
-private data class LegacyHLA(
+internal data class LegacyHLA(
     val ProjectName: String,
     val TrackName: String,
     val Duration: Long,
@@ -100,27 +100,27 @@ private data class LegacyHLA(
 )
 
 
-private interface HasDuration {
+internal interface HasDuration {
     val duration: Long
 }
 
-private interface HasOffset {
+internal interface HasOffset {
     val startOffset: Long
 }
 
 @JsonClass(generateAdapter = true)
-private data class HlaAudio(
+internal data class HlaAudio(
     override val startOffset: Long,
     val filename: String
 ) : HasOffset
 
-private interface ReferencesAudio {
+internal interface ReferencesAudio {
     val audios: List<HlaAudio>
     val requiredAudioFiles: List<String>
 }
 
 @JsonClass(generateAdapter = true)
-private data class PWLEPoint(
+internal data class PWLEPoint(
     val priority: Int,
     val frequency: Float,
     val amplitude: Float,
@@ -128,7 +128,7 @@ private data class PWLEPoint(
 )
 
 @JsonClass(generateAdapter = true)
-private data class BasicPWLEPoint(
+internal data class BasicPWLEPoint(
     val priority: Int,
     val sharpness: Float,
     val intensity: Float,
@@ -136,7 +136,7 @@ private data class BasicPWLEPoint(
 )
 
 @JsonClass(generateAdapter = true)
-private data class AmplitudeWaveform(
+internal data class AmplitudeWaveform(
     val timings: LongArray,
     val amplitudes: IntArray,
     val repeat: Int,
@@ -144,34 +144,34 @@ private data class AmplitudeWaveform(
 ) : HasOffset
 
 @JsonClass(generateAdapter = true)
-private data class HapticPrimitive(
+internal data class HapticPrimitive(
     val name: String,
     val scale: Float,
     override val startOffset: Long
 ) : HasOffset
 
 @JsonClass(generateAdapter = true)
-private data class OGGFile(
+internal data class OGGFile(
     val name: String,
     override val startOffset: Long
 ) : HasOffset
 
 @JsonClass(generateAdapter = true)
-private data class PWLEEnvelope(
+internal data class PWLEEnvelope(
     val initialFrequency: Float,
     val points: List<PWLEPoint>,
     override val startOffset: Long
 ) : HasOffset
 
 @JsonClass(generateAdapter = true)
-private data class BasicPWLEEnvelope(
+internal data class BasicPWLEEnvelope(
     val initialSharpness: Float,
     val points: List<BasicPWLEPoint>,
     override val startOffset: Long
 ) : HasOffset
 
 @JsonClass(generateAdapter = true)
-private data class WaveformSignal(
+internal data class WaveformSignal(
     val primitives: List<HapticPrimitive>,
     val amplitudes: List<AmplitudeWaveform>,
     override val duration: Long,
@@ -180,7 +180,7 @@ private data class WaveformSignal(
 ) : HasDuration, ReferencesAudio
 
 @JsonClass(generateAdapter = true)
-private data class OGGSignal(
+internal data class OGGSignal(
     val primitives: List<HapticPrimitive>,
     val amplitudes: List<AmplitudeWaveform>,
     val oggs: List<OGGFile>,
@@ -190,7 +190,7 @@ private data class OGGSignal(
 ) : HasDuration, ReferencesAudio
 
 @JsonClass(generateAdapter = true)
-private data class PWLESignal(
+internal data class PWLESignal(
     val primitives: List<HapticPrimitive>,
     val amplitudes: List<AmplitudeWaveform>,
     val oggs: List<OGGFile>,
@@ -202,7 +202,7 @@ private data class PWLESignal(
 ) : HasDuration, ReferencesAudio
 
 @JsonClass(generateAdapter = true)
-private data class HLA2(
+internal data class HLA2(
     val version: Int,
     val projectName: String,
     val trackName: String,
@@ -213,27 +213,27 @@ private data class HLA2(
 )
 
 
-private data class LoadedOGG(
+internal data class LoadedOGG(
     val soundId: Int,
     val duration: Int,
 )
 
-private data class LoadedEffect(
+internal data class LoadedEffect(
     val effect: VibrationEffect,
     override val startOffset: Long
 ) : HasOffset
 
-private data class LoadedAudio(
+internal data class LoadedAudio(
     val audio: LowLatencyAudioPlayer,
     override val startOffset: Long
 ) : HasOffset
 
-private data class UncompressedOGGFile(
+internal data class UncompressedOGGFile(
     val uncompressedPath: String,
     override val startOffset: Long
 ) : HasOffset
 
-private data class LoadedHLA(
+internal data class LoadedHLA(
     val effects: List<LoadedEffect>,
     val audio: List<LoadedAudio>,
     val oggs: List<UncompressedOGGFile>,

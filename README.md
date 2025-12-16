@@ -2,6 +2,40 @@
 
 `HapticlabsPlayer` is a Kotlin class for Android that provides a high-level API for playing haptic and audio effects from Hapticlabs, including [`.hac`](https://docs.hapticlabs.io/mobile/hacfiles/), [`.hla`](https://docs.hapticlabs.io/mobile/hlafiles/), as well as [`.ogg`](https://docs.hapticlabs.io/mobile/oggfiles/) files. It automatically selects the best available haptic playback method based on the device's capabilities and manages resource preloading and unloading for low-latency playback.
 
+## Library Installation
+
+To use this library in your project, add it to your app level `build.gradle`'s `dependencies`:
+
+```groovy
+dependencies {
+  implementation "io.hapticlabs:hapticlabsplayer:0.6.3"
+}
+```
+
+Alternatively, register the library in your `libs.versions.toml`:
+
+```toml
+[versions]
+hapticlabsplayer = "0.6.3"
+
+[libraries]
+hapticlabsplayer = { module = "io.hapticlabs:hapticlabsplayer", version.ref = "hapticlabsplayer" }
+```
+
+and add it in your app level `build.gradle.kts`' `dependencies`:
+
+```kotlin
+dependencies {
+  implementation(libs.hapticlabsplayer)
+}
+```
+
+After adding the library, you can easily import the `HapticlabsPlayer` class:
+
+```kotlin
+import io.hapticlabs.hapticlabsplayer.HapticlabsPlayer
+```
+
 ## Public Member Functions
 
 ### `constructor(context: Context)`
