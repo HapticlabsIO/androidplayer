@@ -33,26 +33,62 @@ import kotlin.math.min
 import kotlin.math.round
 
 data class HapticCapabilities(
+    /**
+     * Whether the device supports on / off vibrator control
+     */
     val supportsOnOff: Boolean,
+    /**
+     * Whether the device supports vibration amplitude control
+     */
     val supportsAmplitudeControl: Boolean,
+    /**
+     * Whether the device supports audio coupled haptics using OGG files
+     */
     val supportsAudioCoupled: Boolean,
+    /**
+     * Whether the device supports envelope effects (Basic/WaveformEnvelopeBuilder)
+     */
     val supportsEnvelopeEffects: Boolean,
+    /**
+     * The self-reported resonance frequency of the device's vibration actuator
+     */
     val resonantFrequency: Float,
+    /**
+     * The self-reported frequency response of the device's vibration actuator
+     *
+     * See [android.os.vibrator.VibratorFrequencyProfile] for more information.
+     */
     val frequencyResponse: VibratorFrequencyProfile?,
+    /**
+     * The self-reported q-factor of the device's vibration actuator
+     */
     val qFactor: Float,
+    /**
+     * The self-reported envelope effect info of the device's vibration actuator.
+     *
+     * See [android.os.vibrator.VibratorEnvelopeEffectInfo] for more information.
+     */
     val envelopeEffectInfo: VibratorEnvelopeEffectInfo?,
+    /**
+     * The level of haptic support of the device.
+     * 0: No haptic support
+     * 1: On/off haptic support
+     * 2: Amplitude haptic support
+     * 3: OGG haptic support
+     * 4: PWLE haptic support
+     */
     val hapticSupportLevel: Int
 )
 
 @JsonClass(generateAdapter = true)
-data class LegacyHlaAudio(
+private data class LegacyHlaAudio(
     val Time: Int,
     val Filename: String
 )
 
 @JsonClass(generateAdapter = true)
 // Original HLA format before v2
-data class LegacyHLA(
+private data class LegacyHLA(
     val ProjectName: String,
     val TrackName: String,
     val Duration: Long,
@@ -64,27 +100,27 @@ data class LegacyHLA(
 )
 
 
-interface HasDuration {
+private interface HasDuration {
     val duration: Long
 }
 
-interface HasOffset {
+private interface HasOffset {
     val startOffset: Long
 }
 
 @JsonClass(generateAdapter = true)
-data class HlaAudio(
+private data class HlaAudio(
     override val startOffset: Long,
     val filename: String
 ) : HasOffset
 
-interface ReferencesAudio {
+private interface ReferencesAudio {
     val audios: List<HlaAudio>
     val requiredAudioFiles: List<String>
 }
 
 @JsonClass(generateAdapter = true)
-data class PWLEPoint(
+private data class PWLEPoint(
     val priority: Int,
     val frequency: Float,
     val amplitude: Float,
@@ -92,7 +128,7 @@ data class PWLEPoint(
 )
 
 @JsonClass(generateAdapter = true)
-data class BasicPWLEPoint(
+private data class BasicPWLEPoint(
     val priority: Int,
     val sharpness: Float,
     val intensity: Float,
@@ -100,7 +136,7 @@ data class BasicPWLEPoint(
 )
 
 @JsonClass(generateAdapter = true)
-data class AmplitudeWaveform(
+private data class AmplitudeWaveform(
     val timings: LongArray,
     val amplitudes: IntArray,
     val repeat: Int,
@@ -108,34 +144,34 @@ data class AmplitudeWaveform(
 ) : HasOffset
 
 @JsonClass(generateAdapter = true)
-data class HapticPrimitive(
+private data class HapticPrimitive(
     val name: String,
     val scale: Float,
     override val startOffset: Long
 ) : HasOffset
 
 @JsonClass(generateAdapter = true)
-data class OGGFile(
+private data class OGGFile(
     val name: String,
     override val startOffset: Long
 ) : HasOffset
 
 @JsonClass(generateAdapter = true)
-data class PWLEEnvelope(
+private data class PWLEEnvelope(
     val initialFrequency: Float,
     val points: List<PWLEPoint>,
     override val startOffset: Long
 ) : HasOffset
 
 @JsonClass(generateAdapter = true)
-data class BasicPWLEEnvelope(
+private data class BasicPWLEEnvelope(
     val initialSharpness: Float,
     val points: List<BasicPWLEPoint>,
     override val startOffset: Long
 ) : HasOffset
 
 @JsonClass(generateAdapter = true)
-data class WaveformSignal(
+private data class WaveformSignal(
     val primitives: List<HapticPrimitive>,
     val amplitudes: List<AmplitudeWaveform>,
     override val duration: Long,
@@ -144,7 +180,7 @@ data class WaveformSignal(
 ) : HasDuration, ReferencesAudio
 
 @JsonClass(generateAdapter = true)
-data class OGGSignal(
+private data class OGGSignal(
     val primitives: List<HapticPrimitive>,
     val amplitudes: List<AmplitudeWaveform>,
     val oggs: List<OGGFile>,
@@ -154,7 +190,7 @@ data class OGGSignal(
 ) : HasDuration, ReferencesAudio
 
 @JsonClass(generateAdapter = true)
-data class PWLESignal(
+private data class PWLESignal(
     val primitives: List<HapticPrimitive>,
     val amplitudes: List<AmplitudeWaveform>,
     val oggs: List<OGGFile>,
@@ -166,7 +202,7 @@ data class PWLESignal(
 ) : HasDuration, ReferencesAudio
 
 @JsonClass(generateAdapter = true)
-data class HLA2(
+private data class HLA2(
     val version: Int,
     val projectName: String,
     val trackName: String,
@@ -177,27 +213,27 @@ data class HLA2(
 )
 
 
-data class LoadedOGG(
+private data class LoadedOGG(
     val soundId: Int,
     val duration: Int,
 )
 
-data class LoadedEffect(
+private data class LoadedEffect(
     val effect: VibrationEffect,
     override val startOffset: Long
 ) : HasOffset
 
-data class LoadedAudio(
+private data class LoadedAudio(
     val audio: LowLatencyAudioPlayer,
     override val startOffset: Long
 ) : HasOffset
 
-data class UncompressedOGGFile(
+private data class UncompressedOGGFile(
     val uncompressedPath: String,
     override val startOffset: Long
 ) : HasOffset
 
-data class LoadedHLA(
+private data class LoadedHLA(
     val effects: List<LoadedEffect>,
     val audio: List<LoadedAudio>,
     val oggs: List<UncompressedOGGFile>,
@@ -226,6 +262,12 @@ class HapticlabsPlayer(private val context: Context) {
 
     private val HAC_EXTENSION = ".hac"
 
+    /**
+     * Initialize the player.
+     *
+     * Starts observing audio output device changes to handle OGG routing and removes outdated
+     * caches.
+     */
     init {
         mediaPlayer = MediaPlayer()
         audioPlayer = MediaPlayer()
@@ -355,6 +397,27 @@ class HapticlabsPlayer(private val context: Context) {
         return "$directoryPath/lvl3/main.ogg"
     }
 
+    /**
+     * Play a .hac file.
+     *
+     * Also supports legacy directory-based approach, which is now deprecated. For this, pass the
+     * path to a directory whose structure resembles
+     *  ```
+     *  directoryPath
+     *   ├── lvl1
+     *   │   └── main.hla
+     *   ├── lvl2
+     *   │   └── main.hla
+     *   └── lvl3
+     *       └── main.ogg
+     * ```
+     * Support for the directory-based approach may be removed in future releases. Use .hac files
+     * instead.
+     *
+     * @param directoryOrHACPath The path to the .hac file.  Can be an absolute path in the
+     * filesystem or a path in the assets directory
+     * @param completionCallback A callback to be called when the playback is complete
+     */
     fun play(directoryOrHACPath: String, completionCallback: () -> Unit) {
         // Check if it's a .hac file
         if (directoryOrHACPath.endsWith(HAC_EXTENSION)) {
@@ -841,6 +904,13 @@ class HapticlabsPlayer(private val context: Context) {
         }, startTime + loadedHLA.duration)
     }
 
+    /**
+     * Play a .hla file.
+     *
+     * @param hlaPath The path to the .hla file. Can be an absolute path in the filesystem or a path
+     * in the assets directory
+     * @param completionCallback A callback to be called when the playback is complete
+     */
     fun playHLA(hlaPath: String, completionCallback: () -> Unit) {
         val uncompressedPath = getUncompressedPath(hlaPath, context)
         File(hlaPath).parent?.let {
@@ -878,6 +948,13 @@ class HapticlabsPlayer(private val context: Context) {
         }
     }
 
+    /**
+     * Play a .hac file.
+     *
+     * @param hacPath The path to the .hac file. Can be an absolute path in the filesystem or a path
+     * in the assets directory
+     * @param completionCallback A callback to be called when the playback is complete
+     */
     fun playHAC(hacPath: String, completionCallback: () -> Unit) {
         loadHAC(hacPath) {
             playLoadedHLA2(it, completionCallback)
@@ -967,6 +1044,17 @@ class HapticlabsPlayer(private val context: Context) {
         }
     }
 
+    /**
+     * Preload a .hac file for lower latency playback.
+     *
+     * The file will be parsed and its contents loaded, so future calls to [play] or [play] will
+     * experience substantially less latency. Call [unload] to release the resources.
+     *
+     * Also supports legacy directory-based approach, which is now deprecated. See [play] for more
+     *
+     * @param directoryOrHacPath The path to the .hac file.  Can be an absolute path in the
+     * filesystem or a path in the assets directory
+     */
     fun preload(
         directoryOrHacPath: String
     ) {
@@ -995,6 +1083,16 @@ class HapticlabsPlayer(private val context: Context) {
         }
     }
 
+    /**
+     * Preload an OGG file for lower latency playback.
+     *
+     * The OGG file can be preloaded only if its uncompressed size is less than 1 MB. In that case,
+     * future calls to [playOGG] will experience substantially less latency. Call [unloadOGG] to
+     * release the resources.
+     *
+     * @param oggPath The path to the OGG file. Can be an absolute path in the filesystem or a path
+     * in the assets directory
+     */
     fun preloadOGG(
         oggPath: String
     ) {
@@ -1011,6 +1109,14 @@ class HapticlabsPlayer(private val context: Context) {
         }
     }
 
+    /**
+     * Unload a .hac file previously loaded with [preload]
+     *
+     * Also supports legacy directory-based approach, which is now deprecated. See [play] for more
+     *
+     * @param directoryOrHacPath The path to the .hac file.  Can be an absolute path in the
+     * filesystem or a path in the assets directory
+     */
     fun unload(directoryOrHacPath: String) {
         if (directoryOrHacPath.endsWith(HAC_EXTENSION)) {
             hacMap[directoryOrHacPath]?.let {
@@ -1030,11 +1136,20 @@ class HapticlabsPlayer(private val context: Context) {
         }
     }
 
+    /**
+     * Unload an OGG file previously loaded with [preloadOGG]
+     *
+     * @param oggPath The path to the OGG file. Can be an absolute path in the filesystem or a path
+     * in the assets directory
+     */
     fun unloadOGG(oggPath: String) {
         val uncompressedPath = getUncompressedPath(oggPath, context)
         unloadUncompressedPathOGG(uncompressedPath.absolutePath)
     }
 
+    /**
+     * Unload all resources previously loaded with [preload] or [preloadOGG]
+     */
     fun unloadAll() {
         // Release all loaded OGGs
         oggPool.release()
@@ -1080,6 +1195,15 @@ class HapticlabsPlayer(private val context: Context) {
 
     }
 
+    /**
+     * Plays an OGG file.
+     *
+     * Encoded haptic feedback will be routed to the device vibration actuator for best results.
+     *
+     * @param oggPath The path to the OGG file. Can be an absolute path in the filesystem or a path
+     * in the assets directory
+     * @param completionCallback A callback to be called when the playback is complete
+     */
     fun playOGG(oggPath: String, completionCallback: () -> Unit) {
         val uncompressedPath = getUncompressedPath(oggPath, context)
         playOGGImpl(uncompressedPath.absolutePath, completionCallback)
@@ -1189,6 +1313,15 @@ class HapticlabsPlayer(private val context: Context) {
         }
     }
 
+    /**
+     * Play a built-in haptic effect.
+     *
+     * @param name The name of the built-in effect.  Must be one of the following:
+     *  - "Click"
+     *  - "Double Click"
+     *  - "Heavy Click"
+     *  - "Tick"
+     */
     fun playBuiltIn(name: String) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val effect = when (name) {
