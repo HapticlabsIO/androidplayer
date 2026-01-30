@@ -557,7 +557,7 @@ class HapticlabsPlayer(private val context: Context) {
             )
 
             // 12 ms quarter amplitude
-            "lowtick" -> VibrationEffect.createWaveform(
+            "lowTick" -> VibrationEffect.createWaveform(
                 longArrayOf(12),
                 intArrayOf((255 * primitive.scale / 4).toInt()),
                 -1
@@ -607,7 +607,7 @@ class HapticlabsPlayer(private val context: Context) {
 
                 (primitiveId?.let { primitiveId ->
                     // Check if the effect is supported
-                    if (getVibrator(context).areEffectsSupported(primitiveId)[0] == Vibrator.VIBRATION_EFFECT_SUPPORT_YES) {
+                    if (getVibrator(context).arePrimitivesSupported(primitiveId)[0]) {
                         VibrationEffect.startComposition().addPrimitive(
                             primitiveId, it.scale
                         ).compose()
