@@ -245,6 +245,43 @@ class HapticlabsPlayer(private val context: Context) {
 
     private val CACHE_SUBDIRECTORY = "hapticlabsPlayerCache"
 
+    private val LEVEL_2_SAMSUNG_DEVICES = arrayOf(
+        "SM-S721B",
+        "SM-S721B/DS",
+        "SM-S721U1",
+        "SM-S721U",
+        "SM-S721W",
+        "SM-S7210",
+        "SM-S721N",
+        "SM-S921B",
+        "SM-S921B/DS",
+        "SM-S921U",
+        "SM-S921U1",
+        "SM-S921W",
+        "SM-S921N",
+        "SM-S9210",
+        "SM-S921E",
+        "SM-S921E/DS",
+        "SM-S926B",
+        "SM-S926B/DS",
+        "SM-S926U",
+        "SM-S926U1",
+        "SM-S926W",
+        "SM-S926N",
+        "SM-S9260",
+        "SM-S926E",
+        "SM-S926E/DS",
+        "SM-S928B",
+        "SM-S928B/DS",
+        "SM-S928U",
+        "SM-S928U1",
+        "SM-S928W",
+        "SM-S928N",
+        "SM-S9280",
+        "SM-S928E",
+        "SM-S928E/DS"
+    )
+
     val hapticsCapabilities = determineHapticCapabilities()
 
     private var mediaPlayer: MediaPlayer
@@ -356,12 +393,17 @@ class HapticlabsPlayer(private val context: Context) {
 
     private fun determineHapticCapabilities(): HapticCapabilities {
         val vibrator = getVibrator(context)
+        val isSamsungLevel2Device =
+            Build.MANUFACTURER.equals("samsung", ignoreCase = true) &&
+                LEVEL_2_SAMSUNG_DEVICES.contains(Build.MODEL)
 
         val supportsOnOff = vibrator.hasVibrator()
         val supportsAmplitudeControl =
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && vibrator.hasAmplitudeControl()
         val supportsAudioCoupled =
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && AudioManager.isHapticPlaybackSupported()
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+                AudioManager.isHapticPlaybackSupported() &&
+                !isSamsungLevel2Device
         val supportsEnvelopeEffects =
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA && vibrator.areEnvelopeEffectsSupported()
 

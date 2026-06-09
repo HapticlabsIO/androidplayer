@@ -8,7 +8,7 @@ To use this library in your project, add it to your app level `build.gradle`'s `
 
 ```groovy
 dependencies {
-  implementation "io.hapticlabs:hapticlabsplayer:0.6.3"
+  implementation "io.hapticlabs:hapticlabsplayer:0.6.4"
 }
 ```
 
@@ -16,7 +16,7 @@ Alternatively, register the library in your `libs.versions.toml`:
 
 ```toml
 [versions]
-hapticlabsplayer = "0.6.3"
+hapticlabsplayer = "0.6.4"
 
 [libraries]
 hapticlabsplayer = { module = "io.hapticlabs:hapticlabsplayer", version.ref = "hapticlabsplayer" }
