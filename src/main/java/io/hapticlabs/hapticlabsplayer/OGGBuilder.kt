@@ -1,10 +1,10 @@
 package io.hapticlabs.hapticlabsplayer
 
-import android.media.MediaCodec
-import android.media.MediaCodecList
-import android.media.MediaExtractor
-import android.media.MediaFormat
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
 import java.io.File
+import kotlin.concurrent.thread
 
 class OGGBuilder(
     val habBuffer: ByteArray,
@@ -20,11 +20,54 @@ class OGGBuilder(
     private val pointerToOggGenerator: Long
 
     companion object {
+        private const val TAG = "OGGBuilder"
+
         init {
             System.loadLibrary("habGen")
         }
 
-        public
+        /**
+         * Writes an OGG with the haptics of a .hab and the audio of a media file, if any.
+         *
+         * Blocks until the OGG is complete, so call it off the main thread.
+         *
+         * @param mediaSource Path or http(s) URL of the media whose first audio track to include,
+         * or null for haptics only. URLs are streamed, not downloaded
+         * @throws java.io.IOException if the media can't be read
+         */
+        fun writeOggWithMedia(
+            oggFile: File,
+            mediaSource: String?,
+            habBuffer: ByteArray,
+            habDuration: Float,
+            quality: Float = 0.4f,
+            title: String = "Unknown",
+            album: String = "Unknown"
+        ) {
+            // Without media audio, fall back to 48 kHz stereo silence next to the haptics
+            val audioTrack = mediaSource?.let { DecodedAudioTrack.open(it) }
+            audioTrack.use { track ->
+                OGGBuilder(
+                    habBuffer,
+                    track?.sampleRate?.toUInt() ?: 48000u,
+                    track?.channelCount?.toUShort() ?: 2u,
+                    habDuration,
+                    oggFile,
+                    quality,
+                    title,
+                    album
+                ).use { oggBuilder ->
+                    track?.decodeInto(oggBuilder::pushAudioSamples)
+                }
+            }
+        }
+
+        /**
+         * Writes an OGG like [writeOggWithMedia], but in the background.
+         *
+         * @param completionCallback Called on the main thread once the OGG is complete. Not
+         * called if writing fails
+         */
         fun createOggWithMedia(
             oggPath: File,
             mediaPath: File?,
@@ -34,143 +77,23 @@ class OGGBuilder(
             quality: Float = 0.4f,
             title: String = "Unknown",
             album: String = "Unknown"
-        ): Unit {
-            // Quicc if media is null
-            if (mediaPath == null) {
-                OGGBuilder(
-                    habBuffer,
-                    48000u,
-                    2u,
-                    habDuration,
-                    oggPath,
-                    quality,
-                    title,
-                    album
-                ).close()
-                completionCallback()
-                return
-            }
-
-            // Extract audio from media
-            val audioExtractor = MediaExtractor()
-            audioExtractor.setDataSource(mediaPath.absolutePath)
-            val trackCount = audioExtractor.trackCount
-
-            var decoder: MediaCodec? = null
-            var decoderFormat: MediaFormat? = null
-            val codecList = MediaCodecList(MediaCodecList.REGULAR_CODECS)
-
-            // Select audio tracks
-            for (i in 0 until trackCount) {
-                val format = audioExtractor.getTrackFormat(i)
-                if (format.getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true) {
-                    val decoderType = codecList.findDecoderForFormat(format)
-                    if (decoderType != null) {
-                        decoder = MediaCodec.createByCodecName(decoderType)
-                        decoderFormat = format
-                        audioExtractor.selectTrack(i)
-                        break
-                    }
+        ) {
+            thread {
+                try {
+                    writeOggWithMedia(
+                        oggPath,
+                        mediaPath?.absolutePath,
+                        habBuffer,
+                        habDuration,
+                        quality,
+                        title,
+                        album
+                    )
+                    Handler(Looper.getMainLooper()).post(completionCallback)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to write OGG: $oggPath", e)
                 }
             }
-
-            val sampleRate =
-                decoderFormat?.getInteger(MediaFormat.KEY_SAMPLE_RATE)?.toUInt() ?: 48000u;
-            val channelCount =
-                decoderFormat?.getInteger(MediaFormat.KEY_CHANNEL_COUNT)?.toUShort() ?: 2u;
-            val oggBuilder = OGGBuilder(
-                habBuffer,
-                sampleRate,
-                channelCount,
-                habDuration,
-                oggPath,
-                quality,
-                title,
-                album
-            )
-
-            // Decode
-            if (decoder == null) {
-                // No audio track found
-                // Close the builder directly, no audio needs to be forwarded.
-                oggBuilder.close()
-                audioExtractor.release()
-                completionCallback()
-                return
-            }
-            decoder.setCallback(
-                object : MediaCodec.Callback() {
-                    override fun onOutputBufferAvailable(
-                        codec: MediaCodec,
-                        index: Int,
-                        info: MediaCodec.BufferInfo
-                    ) {
-                        val outputBuffer = codec.getOutputBuffer(index)
-                        if (outputBuffer != null && info.size > 0) {
-                            // Correctly handle buffer offset and size
-                            outputBuffer.position(info.offset)
-                            outputBuffer.limit(info.offset + info.size)
-
-                            // Copy data to ByteArray (required by current pushAudioSamples signature)
-                            val bytes = ByteArray(info.size)
-                            outputBuffer.get(bytes)
-                            oggBuilder.pushAudioSamples(bytes)
-                        }
-
-                        codec.releaseOutputBuffer(index, false)
-
-                        if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
-                            oggBuilder.close()
-                            codec.stop()
-                            codec.release()
-                            audioExtractor.release()
-                            completionCallback()
-                        }
-                    }
-
-                    override fun onInputBufferAvailable(
-                        codec: MediaCodec,
-                        index: Int
-                    ) {
-                        val inputBuffer = codec.getInputBuffer(index) ?: return
-
-                        val sampleSize = audioExtractor.readSampleData(inputBuffer, 0)
-                        val presentationTimeUs = audioExtractor.sampleTime
-
-                        if (sampleSize < 0) {
-                            codec.queueInputBuffer(
-                                index,
-                                0,
-                                0,
-                                0,
-                                MediaCodec.BUFFER_FLAG_END_OF_STREAM
-                            )
-                        } else {
-                            val isEOS = !audioExtractor.advance()
-                            val flags = if (isEOS) MediaCodec.BUFFER_FLAG_END_OF_STREAM else 0
-                            codec.queueInputBuffer(index, 0, sampleSize, presentationTimeUs, flags)
-                        }
-                    }
-
-                    override fun onOutputFormatChanged(
-                        codec: MediaCodec,
-                        format: MediaFormat
-                    ) {
-                    }
-
-                    override fun onError(
-                        codec: MediaCodec,
-                        e: MediaCodec.CodecException
-                    ) {
-                        oggBuilder.close()
-                        codec.release()
-                        audioExtractor.release()
-                    }
-                }
-            )
-
-            decoder.configure(decoderFormat, null, null, 0)
-            decoder.start()
         }
     }
 

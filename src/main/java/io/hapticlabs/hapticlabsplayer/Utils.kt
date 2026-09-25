@@ -9,6 +9,7 @@ import java.io.IOException
 import java.io.InputStream
 import android.os.Build
 import java.nio.file.Paths
+import java.security.MessageDigest
 
 
 fun isAssetPath(path: String, context: Context): Boolean {
@@ -81,4 +82,19 @@ fun getUncompressedAssetPath(assetName: String, context: Context): File {
     }
 
     return outFile
+}
+
+/**
+ * Hashes everything [inputStream] provides with SHA-256.
+ *
+ * @return The hash as lowercase hex digits
+ */
+fun sha256Hex(inputStream: InputStream): String {
+    val digest = MessageDigest.getInstance("SHA-256")
+    val buffer = ByteArray(8192)
+    var bytesRead: Int
+    while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+        digest.update(buffer, 0, bytesRead)
+    }
+    return digest.digest().joinToString("") { "%02x".format(it) }
 }

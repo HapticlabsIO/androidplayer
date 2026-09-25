@@ -15,7 +15,6 @@ import android.os.Looper
 import android.os.SystemClock
 import android.os.VibrationEffect
 import android.os.VibrationEffect.WaveformEnvelopeBuilder
-import android.os.Vibrator
 import android.util.Log
 import android.os.vibrator.VibratorEnvelopeEffectInfo
 import android.os.vibrator.VibratorFrequencyProfile
@@ -28,6 +27,7 @@ import androidx.mediarouter.media.MediaRouter
 import com.squareup.moshi.JsonClass
 import com.squareup.moshi.Moshi
 import java.io.IOException
+import java.util.Vector
 import kotlin.math.abs
 import kotlin.math.min
 import kotlin.math.round
@@ -100,11 +100,13 @@ internal data class LegacyHLA(
 )
 
 
-internal interface HasDuration {
+interface HasDuration {
+    /** Duration in milliseconds */
     val duration: Long
 }
 
-internal interface HasOffset {
+interface HasOffset {
+    /** Offset from the start of playback in milliseconds */
     val startOffset: Long
 }
 
@@ -218,22 +220,26 @@ internal data class LoadedOGG(
     val duration: Int,
 )
 
-internal data class LoadedEffect(
+/** A vibration effect, ready to play. */
+data class LoadedEffect(
     val effect: VibrationEffect,
     override val startOffset: Long
 ) : HasOffset
 
-internal data class LoadedAudio(
+/** A preloaded audio file, ready to play. */
+data class LoadedAudio(
     val audio: LowLatencyAudioPlayer,
     override val startOffset: Long
 ) : HasOffset
 
-internal data class UncompressedOGGFile(
+/** An OGG file with haptics on its own path, ready to play. */
+data class UncompressedOGGFile(
     val uncompressedPath: String,
     override val startOffset: Long
 ) : HasOffset
 
-internal data class LoadedHLA(
+/** Effects, audio and OGGs to play together, ready to play with [HapticlabsPlayer.playLoadedHLA]. */
+data class LoadedHLA(
     val effects: List<LoadedEffect>,
     val audio: List<LoadedAudio>,
     val oggs: List<UncompressedOGGFile>,
@@ -243,7 +249,14 @@ internal data class LoadedHLA(
 class HapticlabsPlayer(private val context: Context) {
     private val TAG = "HapticlabsPlayer"
 
-    private val CACHE_SUBDIRECTORY = "hapticlabsPlayerCache"
+    private val ZIP_CACHE_SUBDIRECTORY = "hapticlabsPlayerCache"
+
+    private val OGG_CACHE_SUBDIRECTORY = "hapticlabsPlayerOGGCache"
+    private val OGG_EXTENSION = ".ogg"
+    private val OGG_SAMPLE_RATE = 48000
+    private val WAV_GEN_STEP_SIZE = 1
+    private val WAV_HEADER_SIZE = 44
+    private val BYTES_PER_SAMPLE = 2
 
     private val LEVEL_2_SAMSUNG_DEVICES = arrayOf(
         "SM-S721B",
@@ -332,9 +345,10 @@ class HapticlabsPlayer(private val context: Context) {
 
         setUpSoundPool()
 
-        // Listen for device speaker selection to determine whether or not haptic playback must
-        // be routed to the device speaker explicitly
         handler = Handler(Looper.getMainLooper())
+
+        // Listen for device speaker selection to determine whether haptic playback must
+        // be routed to the device speaker explicitly
         handler.post {
             val mediaRouter = MediaRouter.getInstance(context)
             val selector = MediaRouteSelector.Builder()
@@ -365,7 +379,7 @@ class HapticlabsPlayer(private val context: Context) {
             mediaRouter.addCallback(selector, mediaRouterCallback)
         }
 
-        ZipCacheManager.dropInvalidCachesIn(context, CACHE_SUBDIRECTORY)
+        ZipCacheManager.dropInvalidCachesIn(context, ZIP_CACHE_SUBDIRECTORY)
     }
 
     private fun setUpSoundPool() {
@@ -395,15 +409,15 @@ class HapticlabsPlayer(private val context: Context) {
         val vibrator = getVibrator(context)
         val isSamsungLevel2Device =
             Build.MANUFACTURER.equals("samsung", ignoreCase = true) &&
-                LEVEL_2_SAMSUNG_DEVICES.contains(Build.MODEL)
+                    LEVEL_2_SAMSUNG_DEVICES.contains(Build.MODEL)
 
         val supportsOnOff = vibrator.hasVibrator()
         val supportsAmplitudeControl =
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && vibrator.hasAmplitudeControl()
         val supportsAudioCoupled =
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
-                AudioManager.isHapticPlaybackSupported() &&
-                !isSamsungLevel2Device
+                    AudioManager.isHapticPlaybackSupported() &&
+                    !isSamsungLevel2Device
         val supportsEnvelopeEffects =
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA && vibrator.areEnvelopeEffectsSupported()
 
@@ -460,59 +474,71 @@ class HapticlabsPlayer(private val context: Context) {
      * filesystem or a path in the assets directory
      * @param completionCallback A callback to be called when the playback is complete
      */
-    fun play(directoryOrHACPath: String, completionCallback: () -> Unit) {
+    fun play(directoryOrHACPath: String, completionCallback: () -> Unit): () -> Unit {
         // Check if it's a .hac file
         if (directoryOrHACPath.endsWith(HAC_EXTENSION)) {
-            playHAC(directoryOrHACPath, completionCallback)
-            return
+            return playHAC(directoryOrHACPath, completionCallback)
         }
 
         // Not a .hac file -> Legacy directory approach
 
+        var aborted = false
+        var abortPlayback = {}
+
+        val abortOrPreventPlayback = {
+            aborted = true
+            abortPlayback()
+        }
+
         // Switch by hapticSupportLevel
         when (hapticsCapabilities.hapticSupportLevel) {
             0 -> {
-                return // Do nothing
+                // Do nothing
+                completionCallback()
             }
 
             1 -> {
                 val hlaDirectoryPath = File("$directoryOrHACPath/lvl1")
                 val hlaFile = File(hlaDirectoryPath, "main.hla")
-                return loadHLAImpl(
+                loadHLAImpl(
                     PossiblyZippedDirectory(
-                        CACHE_SUBDIRECTORY,
+                        ZIP_CACHE_SUBDIRECTORY,
                         hlaDirectoryPath.absolutePath,
                         false,
                         context
                     ), hlaFile
                 ) { loadedHLA ->
-                    playLoadedHLA2(loadedHLA, completionCallback)
+                    if (!aborted)
+                        abortPlayback = playLoadedHLA(loadedHLA, completionCallback)
                 }
             }
 
             2 -> {
                 val hlaDirectoryPath = File("$directoryOrHACPath/lvl2")
                 val hlaFile = File(hlaDirectoryPath, "main.hla")
-                return loadHLAImpl(
+                loadHLAImpl(
                     PossiblyZippedDirectory(
-                        CACHE_SUBDIRECTORY,
+                        ZIP_CACHE_SUBDIRECTORY,
                         hlaDirectoryPath.absolutePath,
                         false,
                         context
                     ), hlaFile
                 ) { loadedHLA ->
-                    playLoadedHLA2(loadedHLA, completionCallback)
+                    if (!aborted)
+                        abortPlayback = playLoadedHLA(loadedHLA, completionCallback)
                 }
             }
 
             3, 4 -> {
                 val path = directoryPathToOGG(directoryOrHACPath)
-                return playOGGImpl(
+                abortPlayback = playOGGImpl(
                     getUncompressedPath(path, context).absolutePath,
                     completionCallback
                 )
             }
         }
+
+        return abortOrPreventPlayback
     }
 
     private fun createFadeEffect(
@@ -781,6 +807,17 @@ class HapticlabsPlayer(private val context: Context) {
         }
     }
 
+    @RequiresApi(Build.VERSION_CODES.Q)
+    fun generateOGGFromHAB(
+        habBuffer: ByteArray,
+        mediaFile: File?,
+        duration: Float,
+        oggFile: File,
+        completionCallback: () -> Unit
+    ): Unit {
+        OGGBuilder.createOggWithMedia(oggFile, mediaFile, habBuffer, duration, completionCallback)
+    }
+
     private fun loadOGGs(
         oggDirectory: PossiblyZippedDirectory,
         oggs: List<OGGFile>
@@ -915,35 +952,76 @@ class HapticlabsPlayer(private val context: Context) {
         )
     }
 
-    private fun playLoadedHLA2(loadedHLA: LoadedHLA, completionCallback: () -> Unit) {
+    /**
+     * Play loaded effects, audio and OGGs, each at its offset.
+     *
+     * @param completionCallback A callback to be called when the playback is complete
+     * @return A callback that when called aborts the playback
+     */
+    fun playLoadedHLA(loadedHLA: LoadedHLA, completionCallback: () -> Unit): () -> Unit {
         // Schedule everything to play back
         val syncDelay = 0
 
         val startTime = SystemClock.uptimeMillis() + syncDelay
 
+        var aborted = false
+        var abortables = Vector<() -> Unit>()
+
         for (oneAudio in loadedHLA.audio) {
             handler.postAtTime({
-                oneAudio.audio.playAudio()
+                if (!aborted) {
+                    // Set up playback termination
+                    val abortCallback = { oneAudio.audio.stopPlayback() }
+                    abortables.addElement(abortCallback)
+                    oneAudio.audio.setPlaybackEndedCallback { abortables.remove(abortCallback) }
+
+                    // Play the audio
+                    oneAudio.audio.playAudio()
+                }
             }, startTime + oneAudio.startOffset)
         }
 
         for (oneOGG in loadedHLA.oggs) {
             handler.postAtTime({
-                this.playOGGImpl(oneOGG.uncompressedPath) {}
+                if (!aborted) {
+                    var abortPlayback: (() -> Unit)? = null
+                    abortPlayback = this.playOGGImpl(oneOGG.uncompressedPath, {
+                        // Remove playback abort callback on playback completion
+                        if (abortPlayback != null) {
+                            abortables.remove(abortPlayback)
+                        }
+                    })
+                    // Register playback abort callback
+                    abortables.addElement(abortPlayback)
+                }
             }, startTime + oneOGG.startOffset)
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             for (oneEffect in loadedHLA.effects) {
                 handler.postAtTime({
-                    getVibrator(context).vibrate(oneEffect.effect)
+                    if (!aborted) {
+                        getVibrator(context).vibrate(oneEffect.effect)
+                    }
                 }, startTime + oneEffect.startOffset)
             }
         }
 
-        handler.postAtTime({
+        abortables.addElement {
+            getVibrator(context).cancel()
             completionCallback()
+        }
+
+        handler.postAtTime({
+            if (!aborted) {
+                completionCallback()
+            }
         }, startTime + loadedHLA.duration)
+
+        return {
+            aborted = true
+            abortables.forEach { it() }
+        }
     }
 
     /**
@@ -957,10 +1035,10 @@ class HapticlabsPlayer(private val context: Context) {
         val uncompressedPath = getUncompressedPath(hlaPath, context)
         File(hlaPath).parent?.let {
             val parentDir = PossiblyZippedDirectory(
-                CACHE_SUBDIRECTORY, it, false, context
+                ZIP_CACHE_SUBDIRECTORY, it, false, context
             )
             loadHLAImpl(parentDir, uncompressedPath) { loadedHLA ->
-                playLoadedHLA2(loadedHLA, completionCallback)
+                playLoadedHLA(loadedHLA, completionCallback)
             }
         } ?: {
             // Failed to obtain parent directory
@@ -971,7 +1049,7 @@ class HapticlabsPlayer(private val context: Context) {
 
     private fun loadHAC(hacPath: String, completionCallback: (loadedHLA: LoadedHLA) -> Unit) {
         val hacDirectory = PossiblyZippedDirectory(
-            CACHE_SUBDIRECTORY, hacPath, true, context
+            ZIP_CACHE_SUBDIRECTORY, hacPath, true, context
         )
         val hlaFile = hacDirectory.getChild("main.hla")
         hlaFile?.let {
@@ -996,10 +1074,19 @@ class HapticlabsPlayer(private val context: Context) {
      * @param hacPath The path to the .hac file. Can be an absolute path in the filesystem or a path
      * in the assets directory
      * @param completionCallback A callback to be called when the playback is complete
+     * @return A callback that when called aborts the playback
      */
-    fun playHAC(hacPath: String, completionCallback: () -> Unit) {
+    fun playHAC(hacPath: String, completionCallback: () -> Unit): () -> Unit {
+        var aborted = false
+        var abortCallback: () -> Unit = {}
         loadHAC(hacPath) {
-            playLoadedHLA2(it, completionCallback)
+            if (!aborted) {
+                abortCallback = playLoadedHLA(it, completionCallback)
+            }
+        }
+        return {
+            aborted = true
+            abortCallback()
         }
     }
 
@@ -1251,15 +1338,34 @@ class HapticlabsPlayer(private val context: Context) {
         playOGGImpl(uncompressedPath.absolutePath, completionCallback)
     }
 
-    private fun playOGGImpl(uncompressedPath: String, completionCallback: () -> Unit) {
+    private fun playOGGImpl(
+        uncompressedPath: String,
+        completionCallback: () -> Unit
+    ): () -> Unit {
         val loadedSound = getOGGSoundId(uncompressedPath)
+
+        // Store whether the playback has been aborted
+        var aborted = false
 
         if (isBuiltInSpeakerSelected && loadedSound != null) {
             // SoundPool approach
-            oggPool.play(loadedSound.soundId, 1f, 1f, 1, 0, 1.0f)
+            var streamId = 0
+            val abort = {
+                aborted = true
+                oggPool.stop(streamId)
+                completionCallback()
+            }
+            streamId = oggPool.play(loadedSound.soundId, 1f, 1f, 1, 0, 1.0f)
             Log.d(TAG, "Playing OGG from SoundPool: $uncompressedPath")
-            handler.postDelayed(completionCallback, loadedSound.duration.toLong())
-            return
+
+            // Schedule the completion callback
+            handler.postDelayed({
+                if (!aborted) {
+                    completionCallback()
+                }
+            }, loadedSound.duration.toLong())
+
+            return abort
         }
 
         // Need to route the haptic playback to the device speaker!
@@ -1342,6 +1448,15 @@ class HapticlabsPlayer(private val context: Context) {
             e.printStackTrace()
         }
 
+        val abort = {
+            aborted = true
+            if (useSeparateAudio) {
+                audioPlayer.stop()
+            }
+            mediaPlayer.stop()
+            completionCallback()
+        }
+
         // Go!
         if (useSeparateAudio) {
             audioPlayer.start()
@@ -1351,8 +1466,12 @@ class HapticlabsPlayer(private val context: Context) {
 
         mediaPlayer.setOnCompletionListener { _ ->
             // Playback completed
-            completionCallback()
+            if (!aborted) {
+                completionCallback()
+            }
         }
+
+        return abort
     }
 
     /**

@@ -18,11 +18,6 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles("consumer-rules.pro")
-        externalNativeBuild {
-            cmake {
-                cppFlags += ""
-            }
-        }
     }
 
     buildTypes {
@@ -103,6 +98,7 @@ publishing {
 }
 
 jreleaser {
+    gitRootSearch = true
     project {
         version = "0.6.4"
         description = "A module to play HLA and OGG haptic files on Android"
