@@ -44,21 +44,41 @@ class OGGBuilder(
             title: String = "Unknown",
             album: String = "Unknown"
         ) {
-            // Without media audio, fall back to 48 kHz stereo silence next to the haptics
-            val audioTrack = mediaSource?.let { DecodedAudioTrack.open(it) }
-            audioTrack.use { track ->
-                OGGBuilder(
-                    habBuffer,
-                    track?.sampleRate?.toUInt() ?: 48000u,
-                    track?.channelCount?.toUShort() ?: 2u,
-                    habDuration,
-                    oggFile,
-                    quality,
-                    title,
-                    album
-                ).use { oggBuilder ->
-                    track?.decodeInto(oggBuilder::pushAudioSamples)
-                }
+            mediaSource?.let { DecodedAudioTrack.open(it) }.use { audioTrack ->
+                writeOggWithAudio(oggFile, audioTrack, habBuffer, habDuration, quality, title, album)
+            }
+        }
+
+        /**
+         * Writes an OGG with the haptics of a .hab and an audio track, if any.
+         *
+         * Blocks until the OGG is complete, so call it off the main thread.
+         *
+         * @param audioTrack The audio to include, or null for haptics only. It's decoded to its
+         * end, but left open
+         * @throws java.io.IOException if the audio can't be read
+         */
+        fun writeOggWithAudio(
+            oggFile: File,
+            audioTrack: DecodedAudioTrack?,
+            habBuffer: ByteArray,
+            habDuration: Float,
+            quality: Float = 0.4f,
+            title: String = "Unknown",
+            album: String = "Unknown"
+        ) {
+            // Without audio, fall back to 48 kHz stereo silence next to the haptics
+            OGGBuilder(
+                habBuffer,
+                audioTrack?.sampleRate?.toUInt() ?: 48000u,
+                audioTrack?.channelCount?.toUShort() ?: 2u,
+                habDuration,
+                oggFile,
+                quality,
+                title,
+                album
+            ).use { oggBuilder ->
+                audioTrack?.decodeInto(oggBuilder::pushAudioSamples)
             }
         }
 

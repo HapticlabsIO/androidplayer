@@ -1,5 +1,6 @@
 package io.hapticlabs.hapticlabsplayer
 
+import android.content.res.AssetFileDescriptor
 import android.media.MediaCodec
 import android.media.MediaCodecList
 import android.media.MediaExtractor
@@ -160,10 +161,22 @@ class DecodedAudioTrack private constructor(
          * @return The decoded track, or null if [source] has no decodable audio track
          * @throws IOException if [source] can't be read
          */
-        fun open(source: String): DecodedAudioTrack? {
+        fun open(source: String): DecodedAudioTrack? = open { it.setDataSource(source) }
+
+        /**
+         * Opens the first audio track of [source] that this device can decode.
+         *
+         * @param source The media, such as an asset stored uncompressed. It can be closed once
+         * this returns
+         * @return The decoded track, or null if [source] has no decodable audio track
+         * @throws IOException if [source] can't be read
+         */
+        fun open(source: AssetFileDescriptor): DecodedAudioTrack? = open { it.setDataSource(source) }
+
+        private fun open(setDataSource: (MediaExtractor) -> Unit): DecodedAudioTrack? {
             val extractor = MediaExtractor()
             try {
-                extractor.setDataSource(source)
+                setDataSource(extractor)
                 val codecList = MediaCodecList(MediaCodecList.REGULAR_CODECS)
                 for (trackIndex in 0 until extractor.trackCount) {
                     val format = extractor.getTrackFormat(trackIndex)

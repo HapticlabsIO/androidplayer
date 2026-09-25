@@ -98,6 +98,23 @@ class OGGBuilderTest {
         assertOggMetadata(oggPath, customTitle, customAlbum)
     }
 
+    @Test
+    fun oggBuilder_assetAudioAndHapticsOGG() {
+        val habBuffer = readAssetBytes("sine8sfreqfade.hab")
+        val oggPath = File(context.cacheDir, "sine8sfreqfade_with_asset_audio.ogg")
+
+        // Read in place, without copying the asset to a file
+        testContext.assets.openFd("test.mp4").use { DecodedAudioTrack.open(it) }.use { audioTrack ->
+            assertNotNull("No decodable audio track", audioTrack)
+            OGGBuilder.writeOggWithAudio(oggPath, audioTrack, habBuffer, 1f)
+        }
+
+        assertValidOgg(oggPath)
+        assertOggDuration(oggPath, (4 * 1000).toLong())
+        // Media (2 channels) + Haptics (1 channel) = 3 channels
+        assertOggChannelCount(oggPath, 3)
+    }
+
     private fun assertValidOgg(file: File) {
         assertTrue("OGG file should exist", file.exists())
         assertTrue("OGG file should not be empty", file.length() > 0)
