@@ -840,57 +840,44 @@ class HapticlabsPlayer(private val context: Context) {
         hla: HLA2,
         completionCallback: (loadedHLA: LoadedHLA) -> Unit
     ) {
-        when (hapticsCapabilities.hapticSupportLevel) {
-            0 -> completionCallback(LoadedHLA(emptyList(), emptyList(), emptyList(), 0))
-            1 -> {
-                completionCallback(
-                    LoadedHLA(
-                        loadPrimitives(hla.onOffSignal.primitives) + loadAmplitudeWaveforms(hla.onOffSignal.amplitudes),
-                        loadAudios(resourcesDirectoryPath, hla.onOffSignal.audios),
-                        emptyList(),
-                        hla.onOffSignal.duration
-                    )
-                )
-            }
+        val loadedHLA = when (hapticsCapabilities.hapticSupportLevel) {
+            1 -> LoadedHLA(
+                loadPrimitives(hla.onOffSignal.primitives) + loadAmplitudeWaveforms(hla.onOffSignal.amplitudes),
+                loadAudios(resourcesDirectoryPath, hla.onOffSignal.audios),
+                emptyList(),
+                hla.onOffSignal.duration
+            )
 
-            2 -> {
-                completionCallback(
-                    LoadedHLA(
-                        loadPrimitives(hla.amplitudeSignal.primitives) + loadAmplitudeWaveforms(
-                            hla.amplitudeSignal.amplitudes
-                        ),
-                        loadAudios(resourcesDirectoryPath, hla.amplitudeSignal.audios),
-                        emptyList(),
-                        hla.amplitudeSignal.duration
-                    )
-                )
-            }
+            2 -> LoadedHLA(
+                loadPrimitives(hla.amplitudeSignal.primitives) + loadAmplitudeWaveforms(
+                    hla.amplitudeSignal.amplitudes
+                ),
+                loadAudios(resourcesDirectoryPath, hla.amplitudeSignal.audios),
+                emptyList(),
+                hla.amplitudeSignal.duration
+            )
 
-            3 -> {
-                completionCallback(
-                    LoadedHLA(
-                        loadPrimitives(hla.oggSignal.primitives) + loadAmplitudeWaveforms(hla.oggSignal.amplitudes),
-                        loadAudios(resourcesDirectoryPath, hla.oggSignal.audios),
-                        loadOGGs(resourcesDirectoryPath, hla.oggSignal.oggs),
-                        hla.oggSignal.duration
-                    )
-                )
-            }
+            3 -> LoadedHLA(
+                loadPrimitives(hla.oggSignal.primitives) + loadAmplitudeWaveforms(hla.oggSignal.amplitudes),
+                loadAudios(resourcesDirectoryPath, hla.oggSignal.audios),
+                loadOGGs(resourcesDirectoryPath, hla.oggSignal.oggs),
+                hla.oggSignal.duration
+            )
 
-            4 -> {
-                completionCallback(
-                    LoadedHLA(
-                        loadPrimitives(hla.pwleSignal.primitives)
-                                + loadAmplitudeWaveforms(hla.pwleSignal.amplitudes)
-                                + loadPWLEWaveforms(hla.pwleSignal.envelopes)
-                                + loadBasicPWLEWaveforms(hla.pwleSignal.basicEnvelopes),
-                        loadAudios(resourcesDirectoryPath, hla.pwleSignal.audios),
-                        loadOGGs(resourcesDirectoryPath, hla.pwleSignal.oggs),
-                        hla.pwleSignal.duration
-                    )
-                )
-            }
+            4 -> LoadedHLA(
+                loadPrimitives(hla.pwleSignal.primitives)
+                        + loadAmplitudeWaveforms(hla.pwleSignal.amplitudes)
+                        + loadPWLEWaveforms(hla.pwleSignal.envelopes)
+                        + loadBasicPWLEWaveforms(hla.pwleSignal.basicEnvelopes),
+                loadAudios(resourcesDirectoryPath, hla.pwleSignal.audios),
+                loadOGGs(resourcesDirectoryPath, hla.pwleSignal.oggs),
+                hla.pwleSignal.duration
+            )
+
+            // No haptic support
+            else -> LoadedHLA(emptyList(), emptyList(), emptyList(), 0)
         }
+        completionCallback(loadedHLA.copy(effects = EffectCombiner.combine(loadedHLA.effects)))
     }
 
     private fun loadLegacyHLA(
