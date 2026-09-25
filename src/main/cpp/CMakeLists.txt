@@ -35,19 +35,15 @@ set(OGG_VERSION_STRING "1.3.5" CACHE STRING "" FORCE)
 FetchContent_Declare(vorbis GIT_REPOSITORY https://github.com/xiph/vorbis.git    GIT_TAG v1.3.7)
 FetchContent_MakeAvailable(vorbis)
 
-set(HAPTICLABS_HABGEN_SOURCE_DIR
-        "${CMAKE_CURRENT_LIST_DIR}/../../../../../oggCompleter"
-        CACHE PATH "Path to the HabGen source tree")
-
-if(NOT EXISTS "${HAPTICLABS_HABGEN_SOURCE_DIR}/CMakeLists.txt")
-    message(FATAL_ERROR
-            "HabGen source tree not found at ${HAPTICLABS_HABGEN_SOURCE_DIR}. "
-            "Set HAPTICLABS_HABGEN_SOURCE_DIR to a checkout of the habgen repository.")
-endif()
-
-set(HAPTICLABS_HABGEN_TARGETS
-    habgen::habgen
+# HabGen, pinned to a release. To build against a local checkout instead, set
+# FETCHCONTENT_SOURCE_DIR_HABGEN to its path (the Gradle property
+# habgenSourceDir does this)
+FetchContent_Declare(habgen
+    GIT_REPOSITORY https://github.com/HapticlabsIO/hab-gen.git
+    GIT_TAG v0.1.0
+    GIT_SHALLOW TRUE
 )
+FetchContent_MakeAvailable(habgen)
 
 # Creates and names a library, sets it as either STATIC
 # or SHARED, and provides the relative paths to its source code.
@@ -71,11 +67,8 @@ if(NOT ANDROID)
     target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE ${JNI_LIBRARIES})
 endif()
 
-add_subdirectory("${HAPTICLABS_HABGEN_SOURCE_DIR}"
-                    "${CMAKE_BINARY_DIR}/external/hapticlabs_habgen")
-
 target_include_directories(${CMAKE_PROJECT_NAME}
-    PRIVATE "${HAPTICLABS_HABGEN_SOURCE_DIR}/src"
+    PRIVATE "${habgen_SOURCE_DIR}/src"
 )
 
 # Specifies libraries CMake should link to your target library. You
@@ -83,5 +76,5 @@ target_include_directories(${CMAKE_PROJECT_NAME}
 # build script, prebuilt third-party libraries, or Android system libraries.
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE
     # List libraries link to the target library
-    ${HAPTICLABS_HABGEN_TARGETS}
+    habgen::habgen
 )

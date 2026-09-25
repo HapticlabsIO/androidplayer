@@ -5,9 +5,10 @@ plugins {
     alias(libs.plugins.kotlin.android)
     `maven-publish`
     alias(libs.plugins.jreleaser)
-    signing
     alias(libs.plugins.ksp)
 }
+
+description = "A module to play HLA and OGG haptic files on Android"
 
 android {
     namespace = "io.hapticlabs.hapticlabsplayer"
@@ -19,6 +20,15 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles("consumer-rules.pro")
+
+        externalNativeBuild {
+            cmake {
+                // Build against a local HabGen checkout instead of the pinned release
+                providers.gradleProperty("habgenSourceDir").orNull?.let { habgenSourceDir ->
+                    arguments += "-DFETCHCONTENT_SOURCE_DIR_HABGEN=${file(habgenSourceDir).absolutePath}"
+                }
+            }
+        }
     }
 
     buildTypes {
@@ -56,14 +66,9 @@ android {
 publishing {
     publications {
         register<MavenPublication>("release") {
-            groupId = "io.hapticlabs"
-            artifactId = "hapticlabsplayer"
-            version = "0.6.4"
-
             pom {
                 name = "Hapticlabs Player"
-                version = "0.6.4"
-                description = "A module to play HLA and OGG haptic files on Android"
+                description = project.description
                 url = "https://github.com/HapticlabsIO/androidplayer"
                 inceptionYear = "2025"
                 licenses {
@@ -101,8 +106,6 @@ publishing {
 jreleaser {
     gitRootSearch = true
     project {
-        version = "0.6.4"
-        description = "A module to play HLA and OGG haptic files on Android"
         copyright = "Copyright (c) 2026 Hapticlabs GmbH"
     }
     signing {

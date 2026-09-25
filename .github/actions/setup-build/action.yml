@@ -1,0 +1,44 @@
+name: Set up build
+description: Sets up the JDK and Gradle, and grants read access to the private native dependencies (hab-gen, hab-cpp)
+
+inputs:
+  app-id:
+    description: GitHub App ID with read access to hab-gen and hab-cpp
+    required: true
+  app-private-key:
+    description: GitHub App private key
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Set up JDK
+      uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: 17
+
+    - name: Set up Gradle
+      uses: gradle/actions/setup-gradle@v4
+
+    - name: Generate dependency auth token
+      id: generate_token
+      uses: actions/create-github-app-token@v1
+      with:
+        app-id: ${{ inputs.app-id }}
+        private-key: ${{ inputs.app-private-key }}
+        owner: ${{ github.repository_owner }}
+        repositories: hab-gen,hab-cpp
+
+    # CMake's FetchContent clones the private repos with git, which reads ~/.netrc
+    - name: Configure credentials for private dependencies
+      shell: bash
+      env:
+        GH_APP_TOKEN: ${{ steps.generate_token.outputs.token }}
+      run: |
+        cat > "$HOME/.netrc" <<EOF
+        machine github.com
+          login x-access-token
+          password ${GH_APP_TOKEN}
+        EOF
+        chmod 600 "$HOME/.netrc"
