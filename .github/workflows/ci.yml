@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build, Lint, Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up build
+        uses: ./.github/actions/setup-build
+        with:
+          app-id: ${{ secrets.SUBMODULE_AUTH_BOI_APP_ID }}
+          app-private-key: ${{ secrets.SUBMODULE_AUTH_BOI_APP_KEY }}
+
+      # publish only writes to the local staging repository, so a PR catches
+      # anything that would break the release (sources/javadoc jars, POM)
+      - name: Build, lint, run unit tests and stage the publication
+        run: ./gradlew build publish

@@ -7,7 +7,6 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InputStream
-import java.security.MessageDigest
 import java.util.Properties
 import java.util.zip.ZipInputStream
 
@@ -224,7 +223,7 @@ object ZipCacheManager {
 
     private fun computeAssetHash(assetName: String, context: Context): String? {
         return try {
-            context.assets.open(assetName).use { computeStreamHash(it) }
+            context.assets.open(assetName).use { sha256Hex(it) }
         } catch (e: IOException) {
             Log.w(TAG, "Failed to compute hash for asset '$assetName'", e)
             null
@@ -234,22 +233,13 @@ object ZipCacheManager {
     private fun computeFileHash(file: File): String? {
         return if (!file.exists()) null else
             try {
-                FileInputStream(file).use { computeStreamHash(it) }
+                FileInputStream(file).use { sha256Hex(it) }
             } catch (e: IOException) {
                 Log.e(TAG, "Failed to compute hash for file '${file.path}'", e)
                 null
             }
     }
 
-    private fun computeStreamHash(inputStream: InputStream): String {
-        val digest = MessageDigest.getInstance("SHA-256")
-        val buffer = ByteArray(8192)
-        var bytesRead: Int
-        while (inputStream.read(buffer).also { bytesRead = it } != -1) {
-            digest.update(buffer, 0, bytesRead)
-        }
-        return digest.digest().fold("") { str, it -> str + "%02x".format(it) }
-    }
 }
 
 /**

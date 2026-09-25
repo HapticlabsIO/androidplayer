@@ -1,6 +1,7 @@
 package io.hapticlabs.hapticlabsplayer
 
 import android.content.Context
+import android.content.pm.PackageManager
 import android.os.Vibrator
 import android.os.VibratorManager
 import java.io.File
@@ -8,17 +9,8 @@ import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InputStream
 import android.os.Build
-import java.nio.file.Paths
+import java.security.MessageDigest
 
-
-fun isAssetPath(path: String, context: Context): Boolean {
-    return try {
-        context.assets.open(path).close()
-        true
-    } catch (e: IOException) {
-        false
-    }
-}
 
 fun getVibrator(context: Context): Vibrator {
     return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -31,19 +23,20 @@ fun getVibrator(context: Context): Vibrator {
     }
 }
 
-fun getUncompressedPath(path: String, context: Context): File {
-    // Try to normalize the path
-    val normalizedPath =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            Paths.get(path).normalize().toString()
-        } else {
-            path
-        }
-    return if (isAssetPath(normalizedPath, context)) {
-        getUncompressedAssetPath(normalizedPath, context)
+/**
+ * @return When the app was last installed or updated, in milliseconds since the epoch
+ */
+private fun getAppUpdateTime(context: Context): Long {
+    val packageInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        context.packageManager.getPackageInfo(
+            context.packageName,
+            PackageManager.PackageInfoFlags.of(0)
+        )
     } else {
-     File(normalizedPath)
+        @Suppress("DEPRECATION")
+        context.packageManager.getPackageInfo(context.packageName, 0)
     }
+    return packageInfo.lastUpdateTime
 }
 
 fun getUncompressedAssetPath(assetName: String, context: Context): File {
@@ -58,7 +51,8 @@ fun getUncompressedAssetPath(assetName: String, context: Context): File {
         outDir.mkdirs()
     }
 
-    if (outFile.exists()) {
+    // Assets can only change with an app update, so copies made since then are up to date
+    if (outFile.exists() && outFile.lastModified() >= getAppUpdateTime(context)) {
         return outFile
     }
 
@@ -81,4 +75,19 @@ fun getUncompressedAssetPath(assetName: String, context: Context): File {
     }
 
     return outFile
+}
+
+/**
+ * Hashes everything [inputStream] provides with SHA-256.
+ *
+ * @return The hash as lowercase hex digits
+ */
+fun sha256Hex(inputStream: InputStream): String {
+    val digest = MessageDigest.getInstance("SHA-256")
+    val buffer = ByteArray(8192)
+    var bytesRead: Int
+    while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+        digest.update(buffer, 0, bytesRead)
+    }
+    return digest.digest().joinToString("") { "%02x".format(it) }
 }

@@ -8,7 +8,7 @@ To use this library in your project, add it to your app level `build.gradle`'s `
 
 ```groovy
 dependencies {
-  implementation "io.hapticlabs:hapticlabsplayer:0.6.4"
+  implementation "io.hapticlabs:hapticlabsplayer:0.7.0"
 }
 ```
 
@@ -16,7 +16,7 @@ Alternatively, register the library in your `libs.versions.toml`:
 
 ```toml
 [versions]
-hapticlabsplayer = "0.6.4"
+hapticlabsplayer = "0.7.0"
 
 [libraries]
 hapticlabsplayer = { module = "io.hapticlabs:hapticlabsplayer", version.ref = "hapticlabsplayer" }
@@ -220,3 +220,29 @@ Describes the haptic capabilities of the current device, including support for o
 - Use `preload` and `preloadOGG` to minimize playback latency for time-critical applications.
 - The legacy directory-based approach is deprecated; prefer `.hac` files for new projects.
 - Playback methods automatically select the best available haptic effect based on device capabilities.
+
+## Development
+
+This repository is a standalone Gradle build. The native OGG encoder depends on the private hab-gen and hab-cpp repositories, which CMake fetches at pinned tags. Building therefore needs git credentials with read access to both.
+
+```sh
+./gradlew build
+```
+
+To build against a local HabGen checkout instead of the pinned release, set the `habgenSourceDir` Gradle property, e.g. in `~/.gradle/gradle.properties`:
+
+```properties
+habgenSourceDir=/path/to/hab-gen
+```
+
+### Releasing
+
+Bump `version` in [`gradle.properties`](gradle.properties) (and the version in the installation instructions above) and merge to `main`. The [release workflow](.github/workflows/release.yml) then publishes the new version to Maven Central, tags it as `v<version>` and creates a GitHub release.
+
+The workflows need these repository secrets:
+
+| Secret | Description |
+| --- | --- |
+| `SUBMODULE_AUTH_BOI_APP_ID`, `SUBMODULE_AUTH_BOI_APP_KEY` | GitHub App with read access to `hab-gen` and `hab-cpp` |
+| `MAVEN_CENTRAL_USERNAME`, `MAVEN_CENTRAL_PASSWORD` | Central Portal user token for the `io.hapticlabs` namespace |
+| `GPG_PUBLIC_KEY`, `GPG_SECRET_KEY`, `GPG_PASSPHRASE` | Armored signing key pair and its passphrase |
