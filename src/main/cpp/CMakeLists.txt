@@ -35,6 +35,12 @@ set(OGG_VERSION_STRING "1.3.5" CACHE STRING "" FORCE)
 FetchContent_Declare(vorbis GIT_REPOSITORY https://github.com/xiph/vorbis.git    GIT_TAG v1.3.7)
 FetchContent_MakeAvailable(vorbis)
 
+# HabGen only reuses the ogg/vorbis targets above if they carry these namespaced
+# names, which vorbis 1.3.7 doesn't define. Without them it falls back to the
+# host's pkg-config, which fails on machines without libogg/libvorbis installed.
+add_library(Vorbis::vorbis ALIAS vorbis)
+add_library(Vorbis::vorbisenc ALIAS vorbisenc)
+
 # HabGen, pinned to a release. To build against a local checkout instead, set
 # FETCHCONTENT_SOURCE_DIR_HABGEN to its path (the Gradle property
 # habgenSourceDir does this)
