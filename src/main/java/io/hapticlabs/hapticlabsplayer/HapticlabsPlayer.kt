@@ -145,9 +145,12 @@ internal data class AmplitudeWaveform(
     override val startOffset: Long
 ) : HasOffset
 
+/** A haptic primitive, such as a click, to play at [startOffset]. */
 @JsonClass(generateAdapter = true)
-internal data class HapticPrimitive(
+data class HapticPrimitive(
+    /** The primitive's name, such as "click", "tick" or "lowTick" */
     val name: String,
+    /** The primitive's intensity, from 0 to 1 */
     val scale: Float,
     override val startOffset: Long
 ) : HasOffset
@@ -312,6 +315,8 @@ class HapticlabsPlayer(private val context: Context) {
 
     private val HAC_EXTENSION = ".hac"
 
+    private val EMPTY_LOADED_HLA = LoadedHLA(emptyList(), emptyList(), emptyList(), 0)
+
     /**
      * Initialize the player.
      *
@@ -453,6 +458,10 @@ class HapticlabsPlayer(private val context: Context) {
         return "$directoryPath/lvl3/main.ogg"
     }
 
+    private fun directoryPathToHLA(directoryPath: String, hapticSupportLevel: Int): String {
+        return "$directoryPath/lvl$hapticSupportLevel/main.hla"
+    }
+
     /**
      * Play a .hac file.
      *
@@ -497,44 +506,18 @@ class HapticlabsPlayer(private val context: Context) {
                 completionCallback()
             }
 
-            1 -> {
-                val hlaDirectoryPath = File("$directoryOrHACPath/lvl1")
-                val hlaFile = File(hlaDirectoryPath, "main.hla")
-                loadHLAImpl(
-                    PossiblyZippedDirectory(
-                        ZIP_CACHE_SUBDIRECTORY,
-                        hlaDirectoryPath.absolutePath,
-                        false,
-                        context
-                    ), hlaFile
-                ) { loadedHLA ->
-                    if (!aborted)
-                        abortPlayback = playLoadedHLA(loadedHLA, completionCallback)
-                }
-            }
-
-            2 -> {
-                val hlaDirectoryPath = File("$directoryOrHACPath/lvl2")
-                val hlaFile = File(hlaDirectoryPath, "main.hla")
-                loadHLAImpl(
-                    PossiblyZippedDirectory(
-                        ZIP_CACHE_SUBDIRECTORY,
-                        hlaDirectoryPath.absolutePath,
-                        false,
-                        context
-                    ), hlaFile
-                ) { loadedHLA ->
+            1, 2 -> {
+                val hlaPath =
+                    directoryPathToHLA(directoryOrHACPath, hapticsCapabilities.hapticSupportLevel)
+                loadHLA(hlaPath) { loadedHLA ->
                     if (!aborted)
                         abortPlayback = playLoadedHLA(loadedHLA, completionCallback)
                 }
             }
 
             3, 4 -> {
-                val path = directoryPathToOGG(directoryOrHACPath)
-                abortPlayback = playOGGImpl(
-                    getUncompressedPath(path, context).absolutePath,
-                    completionCallback
-                )
+                abortPlayback =
+                    resolveAndPlayOGG(directoryPathToOGG(directoryOrHACPath), completionCallback)
             }
         }
 
@@ -635,7 +618,13 @@ class HapticlabsPlayer(private val context: Context) {
         }
     }
 
-    private fun loadPrimitives(primitives: List<HapticPrimitive>): List<LoadedEffect> {
+    /**
+     * Load primitives as vibration effects, falling back to amplitude waveforms where the device
+     * or SDK version doesn't support them.
+     *
+     * @return The effects of the primitives that could be loaded
+     */
+    fun loadPrimitives(primitives: List<HapticPrimitive>): List<LoadedEffect> {
         return if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
             Log.w(TAG, "Primitives are not supported on this SDK version, falling back.")
             primitives.mapNotNull {
@@ -875,7 +864,7 @@ class HapticlabsPlayer(private val context: Context) {
             )
 
             // No haptic support
-            else -> LoadedHLA(emptyList(), emptyList(), emptyList(), 0)
+            else -> EMPTY_LOADED_HLA
         }
         completionCallback(loadedHLA.copy(effects = EffectCombiner.combine(loadedHLA.effects)))
     }
@@ -1019,19 +1008,46 @@ class HapticlabsPlayer(private val context: Context) {
      * @param completionCallback A callback to be called when the playback is complete
      */
     fun playHLA(hlaPath: String, completionCallback: () -> Unit) {
-        val uncompressedPath = getUncompressedPath(hlaPath, context)
-        File(hlaPath).parent?.let {
-            val parentDir = PossiblyZippedDirectory(
-                ZIP_CACHE_SUBDIRECTORY, it, false, context
-            )
-            loadHLAImpl(parentDir, uncompressedPath) { loadedHLA ->
-                playLoadedHLA(loadedHLA, completionCallback)
-            }
-        } ?: {
-            // Failed to obtain parent directory
-            Log.e(TAG, "No parent directory found for .hla file: $hlaPath")
-            completionCallback()
+        loadHLA(hlaPath) { loadedHLA ->
+            playLoadedHLA(loadedHLA, completionCallback)
         }
+    }
+
+    /**
+     * Load a .hla file, finding its audio files next to it.
+     *
+     * @param hlaPath The path to the .hla file. Can be an absolute path in the filesystem or a path
+     * in the assets directory
+     * @param completionCallback Called with the loaded .hla file, which is empty if it can't be found
+     */
+    internal fun loadHLA(hlaPath: String, completionCallback: (loadedHLA: LoadedHLA) -> Unit) {
+        val hlaDirectory = parentDirectoryOf(hlaPath)
+        hlaDirectory.getChild(File(hlaPath).name)?.let { hlaFile ->
+            loadHLAImpl(hlaDirectory, hlaFile, completionCallback)
+        } ?: run {
+            Log.e(TAG, "No .hla file found at: $hlaPath")
+            completionCallback(EMPTY_LOADED_HLA)
+        }
+    }
+
+    /**
+     * @param path An absolute path in the filesystem or a path in the assets directory
+     * @return The directory containing [path]
+     */
+    private fun parentDirectoryOf(path: String): PossiblyZippedDirectory {
+        return PossiblyZippedDirectory(
+            ZIP_CACHE_SUBDIRECTORY, File(path).parent ?: "", false, context
+        )
+    }
+
+    /**
+     * Resolves [path] to a file in the filesystem, extracting it from the assets if needed.
+     *
+     * @param path An absolute path in the filesystem or a path in the assets directory
+     * @return The resolved file, or null if there is no file at [path]
+     */
+    internal fun resolveFile(path: String): File? {
+        return parentDirectoryOf(path).getChild(File(path).name)
     }
 
     private fun loadHAC(hacPath: String, completionCallback: (loadedHLA: LoadedHLA) -> Unit) {
@@ -1041,17 +1057,9 @@ class HapticlabsPlayer(private val context: Context) {
         val hlaFile = hacDirectory.getChild("main.hla")
         hlaFile?.let {
             loadHLAImpl(hacDirectory, it, completionCallback)
-        } ?: {
-            // No .hla file found
+        } ?: run {
             Log.e(TAG, "No .hla file found in .hac file: $hacPath")
-            completionCallback(
-                LoadedHLA(
-                    emptyList(),
-                    emptyList(),
-                    emptyList(),
-                    0
-                )
-            )
+            completionCallback(EMPTY_LOADED_HLA)
         }
     }
 
@@ -1112,7 +1120,7 @@ class HapticlabsPlayer(private val context: Context) {
         } catch (e: Exception) {
             // Failed to parse the file
             Log.e(TAG, "Failed to parse the HLA file", e)
-            completionCallback(LoadedHLA(emptyList(), emptyList(), emptyList(), 0))
+            completionCallback(EMPTY_LOADED_HLA)
         }
     }
 
@@ -1212,8 +1220,8 @@ class HapticlabsPlayer(private val context: Context) {
     fun preloadOGG(
         oggPath: String
     ) {
-        val uncompressedPath = getUncompressedPath(oggPath, context)
-        preloadUncompressedPathOGG(uncompressedPath.absolutePath)
+        resolveFile(oggPath)?.let { preloadUncompressedPathOGG(it.absolutePath) }
+            ?: Log.e(TAG, "No OGG file found at: $oggPath")
     }
 
     private fun unloadUncompressedPathOGG(uncompressedPath: String) {
@@ -1243,7 +1251,7 @@ class HapticlabsPlayer(private val context: Context) {
 
                 // Remove from the preload map
                 hacMap.remove(directoryOrHacPath)
-            } ?: {
+            } ?: run {
                 Log.w(TAG, "Tried to unload a non-loaded .hac file: $directoryOrHacPath")
             }
         } else {
@@ -1259,8 +1267,7 @@ class HapticlabsPlayer(private val context: Context) {
      * in the assets directory
      */
     fun unloadOGG(oggPath: String) {
-        val uncompressedPath = getUncompressedPath(oggPath, context)
-        unloadUncompressedPathOGG(uncompressedPath.absolutePath)
+        resolveFile(oggPath)?.let { unloadUncompressedPathOGG(it.absolutePath) }
     }
 
     /**
@@ -1321,8 +1328,21 @@ class HapticlabsPlayer(private val context: Context) {
      * @param completionCallback A callback to be called when the playback is complete
      */
     fun playOGG(oggPath: String, completionCallback: () -> Unit) {
-        val uncompressedPath = getUncompressedPath(oggPath, context)
-        playOGGImpl(uncompressedPath.absolutePath, completionCallback)
+        resolveAndPlayOGG(oggPath, completionCallback)
+    }
+
+    /**
+     * Resolves [oggPath] with [resolveFile] and plays the OGG file there.
+     *
+     * @return A callback that when called aborts the playback
+     */
+    private fun resolveAndPlayOGG(oggPath: String, completionCallback: () -> Unit): () -> Unit {
+        val oggFile = resolveFile(oggPath) ?: run {
+            Log.e(TAG, "No OGG file found at: $oggPath")
+            completionCallback()
+            return {}
+        }
+        return playOGGImpl(oggFile.absolutePath, completionCallback)
     }
 
     private fun playOGGImpl(
