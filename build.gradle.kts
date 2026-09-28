@@ -20,15 +20,6 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles("consumer-rules.pro")
-
-        externalNativeBuild {
-            cmake {
-                // Build against a local HabGen checkout instead of the pinned release
-                providers.gradleProperty("habgenSourceDir").orNull?.let { habgenSourceDir ->
-                    arguments += "-DFETCHCONTENT_SOURCE_DIR_HABGEN=${file(habgenSourceDir).absolutePath}"
-                }
-            }
-        }
     }
 
     buildTypes {
@@ -46,13 +37,6 @@ android {
     }
     kotlinOptions {
         jvmTarget = "11"
-    }
-
-    externalNativeBuild {
-        cmake {
-            path = file("src/main/cpp/CMakeLists.txt")
-            version = "3.22.1"
-        }
     }
 
     publishing {

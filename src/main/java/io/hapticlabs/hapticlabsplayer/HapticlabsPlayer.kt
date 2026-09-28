@@ -796,17 +796,6 @@ class HapticlabsPlayer(private val context: Context) {
         }
     }
 
-    @RequiresApi(Build.VERSION_CODES.Q)
-    fun generateOGGFromHAB(
-        habBuffer: ByteArray,
-        mediaFile: File?,
-        duration: Float,
-        oggFile: File,
-        completionCallback: () -> Unit
-    ): Unit {
-        OGGBuilder.createOggWithMedia(oggFile, mediaFile, habBuffer, duration, completionCallback)
-    }
-
     private fun loadOGGs(
         oggDirectory: PossiblyZippedDirectory,
         oggs: List<OGGFile>

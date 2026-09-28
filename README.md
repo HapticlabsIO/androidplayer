@@ -223,17 +223,13 @@ Describes the haptic capabilities of the current device, including support for o
 
 ## Development
 
-This repository is a standalone Gradle build. The native OGG encoder depends on the private hab-gen and hab-cpp repositories, which CMake fetches at pinned tags. Building therefore needs git credentials with read access to both.
+This repository is a standalone Gradle build.
 
 ```sh
 ./gradlew build
 ```
 
-To build against a local HabGen checkout instead of the pinned release, set the `habgenSourceDir` Gradle property, e.g. in `~/.gradle/gradle.properties`:
-
-```properties
-habgenSourceDir=/path/to/hab-gen
-```
+Generating OGGs from `.hab` files lives in [`habplayer`](https://github.com/HapticlabsIO/android-habplayer), which builds on this library.
 
 ### Releasing
 
@@ -243,6 +239,5 @@ The workflows need these repository secrets:
 
 | Secret | Description |
 | --- | --- |
-| `SUBMODULE_AUTH_BOI_APP_ID`, `SUBMODULE_AUTH_BOI_APP_KEY` | GitHub App with read access to `hab-gen` and `hab-cpp` |
 | `MAVEN_CENTRAL_USERNAME`, `MAVEN_CENTRAL_PASSWORD` | Central Portal user token for the `io.hapticlabs` namespace |
 | `GPG_PUBLIC_KEY`, `GPG_SECRET_KEY`, `GPG_PASSPHRASE` | Armored signing key pair and its passphrase |

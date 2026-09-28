@@ -62,9 +62,6 @@ jobs:
       - name: Set up build
         if: steps.version.outputs.released == 'true'
         uses: ./.github/actions/setup-build
-        with:
-          app-id: ${{ secrets.SUBMODULE_AUTH_BOI_APP_ID }}
-          app-private-key: ${{ secrets.SUBMODULE_AUTH_BOI_APP_KEY }}
 
       - name: Publish to Maven Central
         if: steps.version.outputs.released == 'true'

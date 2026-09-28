@@ -20,9 +20,6 @@ jobs:
 
       - name: Set up build
         uses: ./.github/actions/setup-build
-        with:
-          app-id: ${{ secrets.SUBMODULE_AUTH_BOI_APP_ID }}
-          app-private-key: ${{ secrets.SUBMODULE_AUTH_BOI_APP_KEY }}
 
       # publish only writes to the local staging repository, so a PR catches
       # anything that would break the release (sources/javadoc jars, POM)
