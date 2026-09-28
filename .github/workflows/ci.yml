@@ -25,3 +25,7 @@ jobs:
       # anything that would break the release (sources/javadoc jars, POM)
       - name: Build, lint, run unit tests and stage the publication
         run: ./gradlew build publish
+
+      # The deploy uploads what publish staged, so it fails if it can run first
+      - name: Check that the deploy stages the publication first
+        run: ./gradlew jreleaserDeploy --dry-run | grep -qx ':publish SKIPPED'

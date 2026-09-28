@@ -4,11 +4,13 @@ name: Release
 # new gradle.properties version lands on main. Mirrors
 # HapticlabsIO/workflows' release-on-version-change.yml, which this public repo
 # can't call because that repo is private.
+# Can also be started manually, e.g. to retry a release that failed.
 
 on:
   push:
     branches: [main]
     paths: [gradle.properties]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -16,6 +18,8 @@ permissions:
 jobs:
   release:
     name: Publish and release
+    # A manual run can target any branch, but only main may be released
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -71,7 +75,7 @@ jobs:
           JRELEASER_GPG_PUBLIC_KEY: ${{ secrets.GPG_PUBLIC_KEY }}
           JRELEASER_GPG_SECRET_KEY: ${{ secrets.GPG_SECRET_KEY }}
           JRELEASER_GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
-        run: ./gradlew publish jreleaserDeploy
+        run: ./gradlew jreleaserDeploy
 
       - name: Create tag and release
         if: steps.version.outputs.released == 'true'

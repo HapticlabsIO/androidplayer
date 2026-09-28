@@ -1,3 +1,4 @@
+import org.jreleaser.gradle.plugin.tasks.JReleaserDeployTask
 import org.jreleaser.model.Active
 
 plugins {
@@ -9,6 +10,9 @@ plugins {
 }
 
 description = "A module to play HLA and OGG haptic files on Android"
+
+// `publish` stages the artifacts here, and JReleaser deploys them from here
+val stagingDeployDir = layout.buildDirectory.dir("staging-deploy")
 
 android {
     namespace = "io.hapticlabs.hapticlabsplayer"
@@ -82,7 +86,7 @@ publishing {
 
     repositories {
         maven {
-            url = layout.buildDirectory.dir("staging-deploy").get().asFile.toURI()
+            url = stagingDeployDir.get().asFile.toURI()
         }
     }
 }
@@ -101,7 +105,7 @@ jreleaser {
             mavenCentral.create("sonatype") {
                 active = Active.ALWAYS
                 url = "https://central.sonatype.com/api/v1/publisher"
-                stagingRepository(layout.buildDirectory.dir("staging-deploy").get().toString())
+                stagingRepository(stagingDeployDir.get().toString())
                 setAuthorization("Basic")
                 namespace = "io.hapticlabs"
                 applyMavenCentralRules = false
@@ -113,6 +117,11 @@ jreleaser {
             }
         }
     }
+}
+
+// Without this, Gradle may run the deploy before `publish` has staged anything
+tasks.withType<JReleaserDeployTask>().configureEach {
+    dependsOn(tasks.named("publish"))
 }
 
 dependencies {
