@@ -1,4 +1,4 @@
-package com.hapticlabs.hapticlabsplayer
+package io.hapticlabs.hapticlabsplayer
 
 import org.junit.Test
 

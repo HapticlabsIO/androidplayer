@@ -18,6 +18,8 @@ class LowLatencyAudioPlayer(private val filePath: File, private val context: Con
     private var info: MediaCodec.BufferInfo? = null
     private var isEOS = false
 
+    private var playbackEndedCallback: () -> Unit = {}
+
     /**
      * Preload the audio data from the file. This sets up the MediaExtractor and
      * MediaCodec and prepares the AudioTrack for playback.
@@ -138,6 +140,16 @@ class LowLatencyAudioPlayer(private val filePath: File, private val context: Con
                 .build()
 
             audioTrack?.write(fullBuffer, 0, fullBuffer.size)
+            audioTrack?.setNotificationMarkerPosition(fullBuffer.size / channelCount / 2)
+            audioTrack?.setPlaybackPositionUpdateListener(object : AudioTrack.OnPlaybackPositionUpdateListener{
+                override fun onMarkerReached(track: AudioTrack) {
+                    playbackEndedCallback()
+                }
+
+                override fun onPeriodicNotification(track: AudioTrack?) {
+                    // Ignore
+                }
+            })
 
         } catch (e: IOException) {
             e.printStackTrace()
@@ -149,5 +161,22 @@ class LowLatencyAudioPlayer(private val filePath: File, private val context: Con
      */
     fun playAudio() {
         audioTrack?.play()
+    }
+
+    fun stopPlayback() {
+        audioTrack?.stop()
+        playbackEndedCallback()
+    }
+
+    fun setPlaybackEndedCallback(callback: () -> Unit){
+        playbackEndedCallback = callback
+    }
+
+    /**
+     * Release the audio track. The player can't play afterwards.
+     */
+    fun release() {
+        audioTrack?.release()
+        audioTrack = null
     }
 }

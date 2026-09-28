@@ -8,7 +8,7 @@ To use this library in your project, add it to your app level `build.gradle`'s `
 
 ```groovy
 dependencies {
-  implementation "io.hapticlabs:hapticlabsplayer:0.6.4"
+  implementation "io.hapticlabs:hapticlabsplayer:0.7.0"
 }
 ```
 
@@ -16,7 +16,7 @@ Alternatively, register the library in your `libs.versions.toml`:
 
 ```toml
 [versions]
-hapticlabsplayer = "0.6.4"
+hapticlabsplayer = "0.7.0"
 
 [libraries]
 hapticlabsplayer = { module = "io.hapticlabs:hapticlabsplayer", version.ref = "hapticlabsplayer" }
@@ -220,3 +220,24 @@ Describes the haptic capabilities of the current device, including support for o
 - Use `preload` and `preloadOGG` to minimize playback latency for time-critical applications.
 - The legacy directory-based approach is deprecated; prefer `.hac` files for new projects.
 - Playback methods automatically select the best available haptic effect based on device capabilities.
+
+## Development
+
+This repository is a standalone Gradle build.
+
+```sh
+./gradlew build
+```
+
+Generating OGGs from `.hab` files lives in [`habplayer`](https://github.com/HapticlabsIO/android-habplayer), which builds on this library.
+
+### Releasing
+
+Bump `version` in [`gradle.properties`](gradle.properties) (and the version in the installation instructions above) and merge to `main`. The [release workflow](.github/workflows/release.yml) then publishes the new version to Maven Central, tags it as `v<version>` and creates a GitHub release.
+
+The workflows need these repository secrets:
+
+| Secret | Description |
+| --- | --- |
+| `MAVEN_CENTRAL_USERNAME`, `MAVEN_CENTRAL_PASSWORD` | Central Portal user token for the `io.hapticlabs` namespace |
+| `GPG_PUBLIC_KEY`, `GPG_SECRET_KEY`, `GPG_PASSPHRASE` | Armored signing key pair and its passphrase |
