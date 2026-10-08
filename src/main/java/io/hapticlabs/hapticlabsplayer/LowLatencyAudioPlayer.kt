@@ -157,10 +157,16 @@ class LowLatencyAudioPlayer(private val filePath: File, private val context: Con
     }
 
     /**
-     * Trigger playback of the audio.
+     * Trigger playback of the audio from its start, also when it played before.
      */
     fun playAudio() {
-        audioTrack?.play()
+        audioTrack?.apply {
+            // A static track that played to its end keeps playing silently there, so play() would do
+            // nothing. Stopping and rewinding lets it play again, and fire its end marker again
+            stop()
+            reloadStaticData()
+            play()
+        }
     }
 
     fun stopPlayback() {

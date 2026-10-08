@@ -30,6 +30,8 @@ dependencies {
 }
 ```
 
+Your app needs to compile against API level 36 or later, with a `compileSdk` of 36 or more.
+
 After adding the library, you can easily import the `HapticlabsPlayer` class:
 
 ```kotlin
@@ -223,7 +225,7 @@ Describes the haptic capabilities of the current device, including support for o
 
 ## Development
 
-This repository is a standalone Gradle build.
+This repository is a standalone Gradle build. It uses React Native's Android Gradle plugin version, like [`habplayer`](https://github.com/HapticlabsIO/android-habplayer), as builds that include it, such as the example app or React Native apps building `habplayer` from source, need the same one.
 
 ```sh
 ./gradlew build
