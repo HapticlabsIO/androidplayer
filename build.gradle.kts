@@ -1,3 +1,4 @@
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jreleaser.gradle.plugin.tasks.JReleaserDeployTask
 import org.jreleaser.model.Active
 
@@ -11,6 +12,12 @@ plugins {
 
 description = "A module to play HLA and OGG haptic files on Android"
 
+kotlin {
+    compilerOptions {
+        jvmTarget = JvmTarget.JVM_11
+    }
+}
+
 // `publish` stages the artifacts here, and JReleaser deploys them from here
 val stagingDeployDir = layout.buildDirectory.dir("staging-deploy")
 
@@ -21,6 +28,11 @@ android {
 
     defaultConfig {
         minSdk = 24
+        aarMetadata {
+            // The level of the types in the public API. 37.2 is only needed internally, behind version
+            // checks, so apps don't have to compile against it
+            minCompileSdk = 36
+        }
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles("consumer-rules.pro")
@@ -38,9 +50,6 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
-    }
-    kotlinOptions {
-        jvmTarget = "11"
     }
 
     publishing {

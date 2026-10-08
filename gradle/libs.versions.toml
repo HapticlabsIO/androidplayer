@@ -1,8 +1,10 @@
 [versions]
-# Must match the AGP version of any build that includes this one (e.g. the example app)
-agp = "8.11.0"
-kotlin = "2.0.0"
-ksp = "2.0.0-1.0.24"
+# Must match the AGP version of any build that includes this one (e.g. the example app). React
+# Native's, so that React Native apps can include it too
+agp = "9.2.1"
+# The version AGP requires
+kotlin = "2.2.10"
+ksp = "2.2.10-2.0.2"
 junit = "4.13.2"
 junitVersion = "1.2.1"
 espressoCore = "3.6.1"
