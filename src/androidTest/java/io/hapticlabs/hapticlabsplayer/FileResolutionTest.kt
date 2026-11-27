@@ -78,7 +78,7 @@ class FileResolutionTest {
 
         hapticlabsPlayer.loadHLA("legacy/lvl1/main.hla") { loadedHLA = it }
 
-        assertEquals(1, loadedHLA?.audio?.size)
+        assertEquals("audio.wav", loadedHLA?.audio?.path?.let { File(it).name })
     }
 
     @Test

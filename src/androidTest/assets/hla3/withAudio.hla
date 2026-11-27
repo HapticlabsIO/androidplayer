@@ -1,0 +1,5 @@
+{"version":3,"projectName":"Test","trackName":"withAudio",
+"onOffSignal":{"primitives":[],"amplitudes":[],"duration":10,"audio":"audio.wav"},
+"amplitudeSignal":{"primitives":[],"amplitudes":[],"duration":10,"audio":"audio.wav"},
+"oggSignal":{"primitives":[],"amplitudes":[],"oggs":[],"duration":10,"audio":"audio.wav"},
+"pwleSignal":{"primitives":[],"amplitudes":[],"oggs":[],"envelopes":[],"basicEnvelopes":[],"duration":10,"audio":"audio.wav"}}

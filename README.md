@@ -8,7 +8,7 @@ To use this library in your project, add it to your app level `build.gradle`'s `
 
 ```groovy
 dependencies {
-  implementation "io.hapticlabs:hapticlabsplayer:0.7.0"
+  implementation "io.hapticlabs:hapticlabsplayer:0.8.0"
 }
 ```
 
@@ -16,7 +16,7 @@ Alternatively, register the library in your `libs.versions.toml`:
 
 ```toml
 [versions]
-hapticlabsplayer = "0.7.0"
+hapticlabsplayer = "0.8.0"
 
 [libraries]
 hapticlabsplayer = { module = "io.hapticlabs:hapticlabsplayer", version.ref = "hapticlabsplayer" }
@@ -94,6 +94,7 @@ Plays a haptic/audio effect from a `.hla` file.
 - **Behavior:**
   - Loads and parses the `.hla` file and associated resources.
   - Selects the best playback method based on device capabilities.
+  - Plays the selected signal's audio file, if any, from the start. `.hla` version 2 is deprecated: its signals list several audio files at offsets, of which only the first plays, from the start. The same goes for legacy `.hla` files.
 
 ---
 
@@ -124,6 +125,7 @@ Plays an OGG file containing audio and/or encoded haptic feedback.
 - **Behavior:**
   - Routes haptic playback to the device vibration actuator for best results.
   - Handles device speaker routing and fallback to MediaPlayer if necessary.
+  - Plays along with OGGs that are playing already, mixing their haptics like their audio. Preloaded OGGs and audio play together up to 8 at a time, after which a new one stops the oldest.
 
 ---
 
@@ -154,7 +156,7 @@ Preloads a `.hac` file or legacy directory for low-latency playback.
 
 - **Behavior:**
   - Parses and loads resources into memory.
-  - Preloads OGG files if possible.
+  - Preloads its audio and OGG files if possible.
   - Call `unload()` to release resources.
 
 ---
@@ -170,6 +172,20 @@ Preloads an OGG file for low-latency playback.
 - **Behavior:**
   - Loads the OGG file into memory if its uncompressed size is less than 1 MB.
   - Call `unloadOGG()` to release the resource.
+
+---
+
+### `fun preloadAudio(audioPath: String)`
+
+Preloads an audio file for low-latency playback with `playLoadedHLA`.
+
+- **Parameters:**
+
+  - `audioPath`: Path to the audio file (absolute or asset path).
+
+- **Behavior:**
+  - Loads the audio file into memory if its uncompressed size is less than 1 MB, such as 5 s of 48 kHz stereo audio. Audio that isn't preloaded, plays part-way through or plays stretched by `playLoadedHLA`'s `audioDurationScale`, plays with a `MediaPlayer`, which takes a moment to be heard. `playLoadedHLA` then starts everything else once it is, so that all plays in sync.
+  - Call `unloadAudio()` to release the resource.
 
 ---
 
@@ -199,12 +215,25 @@ Unloads an OGG file previously loaded with `preloadOGG`.
 
 ---
 
-### `fun unloadAll()`
+### `fun unloadAudio(audioPath: String)`
 
-Unloads all resources previously loaded with `preload` or `preloadOGG`.
+Unloads an audio file previously loaded with `preloadAudio`.
+
+- **Parameters:**
+
+  - `audioPath`: Path to the audio file (absolute or asset path).
 
 - **Behavior:**
-  - Releases all loaded OGGs and clears internal caches.
+  - Releases the audio resource from memory.
+
+---
+
+### `fun unloadAll()`
+
+Unloads all resources previously loaded with `preload`, `preloadOGG` or `preloadAudio`.
+
+- **Behavior:**
+  - Releases all loaded audio and OGGs and clears internal caches.
 
 ---
 
@@ -219,7 +248,7 @@ Describes the haptic capabilities of the current device, including support for o
 ## Usage Notes
 
 - Always call `unload` or `unloadAll` to release resources when they are no longer needed.
-- Use `preload` and `preloadOGG` to minimize playback latency for time-critical applications.
+- Use `preload`, `preloadOGG` and `preloadAudio` to minimize playback latency for time-critical applications.
 - The legacy directory-based approach is deprecated; prefer `.hac` files for new projects.
 - Playback methods automatically select the best available haptic effect based on device capabilities.
 

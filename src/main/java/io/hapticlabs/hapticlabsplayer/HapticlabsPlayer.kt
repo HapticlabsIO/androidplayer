@@ -5,7 +5,8 @@ import android.media.AudioAttributes
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.media.AudioManager.GET_DEVICES_OUTPUTS
-import android.media.MediaMetadataRetriever
+import android.media.MediaExtractor
+import android.media.MediaFormat
 import android.media.MediaPlayer
 import android.media.SoundPool
 import android.media.audiofx.HapticGenerator
@@ -30,6 +31,7 @@ import java.io.IOException
 import java.util.Vector
 import kotlin.math.abs
 import kotlin.math.min
+import kotlin.math.roundToLong
 import kotlin.math.round
 
 data class HapticCapabilities(
@@ -92,7 +94,6 @@ internal data class LegacyHLA(
     val ProjectName: String,
     val TrackName: String,
     val Duration: Long,
-    val RequiredAudioFiles: List<String>,
     val Audios: List<LegacyHlaAudio>,
     val Timings: LongArray,
     val Amplitudes: IntArray,
@@ -110,16 +111,12 @@ interface HasOffset {
     val startOffset: Long
 }
 
+/** An audio file of HLA version 2, deprecated, to play at [startOffset] */
 @JsonClass(generateAdapter = true)
 internal data class HlaAudio(
     override val startOffset: Long,
     val filename: String
 ) : HasOffset
-
-internal interface ReferencesAudio {
-    val audios: List<HlaAudio>
-    val requiredAudioFiles: List<String>
-}
 
 @JsonClass(generateAdapter = true)
 internal data class PWLEPoint(
@@ -175,13 +172,24 @@ internal data class BasicPWLEEnvelope(
     override val startOffset: Long
 ) : HasOffset
 
+/**
+ * A signal's audio: since version 3 one file in [audio], before that files at offsets in [audios].
+ */
+internal interface ReferencesAudio {
+    /** The filename of the audio to play from the start, relative to the .hla file */
+    val audio: String?
+
+    /** Version 2's audio files, deprecated */
+    val audios: List<HlaAudio>
+}
+
 @JsonClass(generateAdapter = true)
 internal data class WaveformSignal(
     val primitives: List<HapticPrimitive>,
     val amplitudes: List<AmplitudeWaveform>,
     override val duration: Long,
-    override val requiredAudioFiles: List<String>,
-    override val audios: List<HlaAudio>
+    override val audio: String? = null,
+    override val audios: List<HlaAudio> = emptyList()
 ) : HasDuration, ReferencesAudio
 
 @JsonClass(generateAdapter = true)
@@ -190,8 +198,8 @@ internal data class OGGSignal(
     val amplitudes: List<AmplitudeWaveform>,
     val oggs: List<OGGFile>,
     override val duration: Long,
-    override val requiredAudioFiles: List<String>,
-    override val audios: List<HlaAudio>
+    override val audio: String? = null,
+    override val audios: List<HlaAudio> = emptyList()
 ) : HasDuration, ReferencesAudio
 
 @JsonClass(generateAdapter = true)
@@ -202,12 +210,13 @@ internal data class PWLESignal(
     val envelopes: List<PWLEEnvelope>,
     val basicEnvelopes: List<BasicPWLEEnvelope>,
     override val duration: Long,
-    override val requiredAudioFiles: List<String>,
-    override val audios: List<HlaAudio>
+    override val audio: String? = null,
+    override val audios: List<HlaAudio> = emptyList()
 ) : HasDuration, ReferencesAudio
 
+/** An HLA file of version 2, deprecated, or 3 */
 @JsonClass(generateAdapter = true)
-internal data class HLA2(
+internal data class HLA(
     val version: Int,
     val projectName: String,
     val trackName: String,
@@ -218,9 +227,11 @@ internal data class HLA2(
 )
 
 
-internal data class LoadedOGG(
+/** A sound loaded into SoundPool, or loading */
+internal data class PooledSound(
     val soundId: Int,
-    val duration: Int,
+    /** In milliseconds */
+    val duration: Long,
 )
 
 /** A vibration effect, ready to play. */
@@ -229,11 +240,33 @@ data class LoadedEffect(
     override val startOffset: Long
 ) : HasOffset
 
-/** A preloaded audio file, ready to play. */
+/**
+ * An audio file, ready to play from the start of a [LoadedHLA]. [HapticlabsPlayer.preloadAudio]
+ * lowers the latency of playing it.
+ */
 data class LoadedAudio(
-    val audio: LowLatencyAudioPlayer,
-    override val startOffset: Long
-) : HasOffset
+    /** The path of the audio file in the filesystem */
+    val path: String
+)
+
+/** What [HapticlabsPlayer.playLoadedHLA] can multiply the duration of audio with */
+val AUDIO_DURATION_SCALES = 0.5f..2f
+
+/** A media file to play at [startOffset] */
+private data class MediaFile(
+    val path: String,
+    /** Whether the file has haptic channels, which play on the built-in speaker's vibrator */
+    val hasHapticChannels: Boolean,
+    override val startOffset: Long,
+    /** What the duration of the file is multiplied with, keeping its pitch */
+    val durationScale: Float
+) : HasOffset {
+    /**
+     * @return Where in the file a playback from [startPosition] starts it, in milliseconds since
+     * the start of the file
+     */
+    fun positionAt(startPosition: Long): Long = (maxOf(0, startPosition - startOffset) / durationScale).roundToLong()
+}
 
 /** An OGG file with haptics on its own path, ready to play. */
 data class UncompressedOGGFile(
@@ -244,7 +277,7 @@ data class UncompressedOGGFile(
 /** Effects, audio and OGGs to play together, ready to play with [HapticlabsPlayer.playLoadedHLA]. */
 data class LoadedHLA(
     val effects: List<LoadedEffect>,
-    val audio: List<LoadedAudio>,
+    val audio: LoadedAudio?,
     val oggs: List<UncompressedOGGFile>,
     override val duration: Long
 ) : HasDuration
@@ -300,10 +333,9 @@ class HapticlabsPlayer(private val context: Context) {
 
     val hapticsCapabilities = determineHapticCapabilities()
 
-    private var mediaPlayer: MediaPlayer
-    private var audioPlayer: MediaPlayer
-    private var oggPool: SoundPool
-    private var poolMap: HashMap<String, LoadedOGG> = HashMap()
+    private val mediaPlayer: MediaPlayer
+    private var soundPool: SoundPool
+    private var poolMap: HashMap<String, PooledSound> = HashMap()
 
 
     private var hacMap: HashMap<String, LoadedHLA> = HashMap()
@@ -311,11 +343,26 @@ class HapticlabsPlayer(private val context: Context) {
     private var handler: Handler
     private var isBuiltInSpeakerSelected: Boolean = true
 
-    private val SOUNDPOOL_BITS_PER_SAMPLE = 16
+    private val MICROSECONDS_PER_MILLISECOND = 1000
+    private val MILLISECONDS_PER_SECOND = 1000
+
+    private val SOUNDPOOL_BYTES_PER_SAMPLE = 2
+
+    // SoundPool fails to load sounds that decode to more
+    private val SOUNDPOOL_MAX_BYTES = 1_000_000
+
+    // How many sounds SoundPool plays at once. Beyond that, a new one stops the oldest
+    private val MAX_SOUND_POOL_STREAMS = 8
+
+    // How often to check whether media playing with MediaPlayers is heard yet
+    private val HEARD_CHECK_INTERVAL_MS = 5L
+
+    // How long to wait at most for media playing with MediaPlayers to be heard
+    private val MAX_HEARD_WAIT_MS = 1000L
 
     private val HAC_EXTENSION = ".hac"
 
-    private val EMPTY_LOADED_HLA = LoadedHLA(emptyList(), emptyList(), emptyList(), 0)
+    private val EMPTY_LOADED_HLA = LoadedHLA(emptyList(), null, emptyList(), 0)
 
     /**
      * Initialize the player.
@@ -325,7 +372,6 @@ class HapticlabsPlayer(private val context: Context) {
      */
     init {
         mediaPlayer = MediaPlayer()
-        audioPlayer = MediaPlayer()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             mediaPlayer.setAudioAttributes(
@@ -345,8 +391,8 @@ class HapticlabsPlayer(private val context: Context) {
         }
 
         // For the compiler
-        oggPool = SoundPool.Builder().build()
-        oggPool.release()
+        soundPool = SoundPool.Builder().build()
+        soundPool.release()
 
         setUpSoundPool()
 
@@ -388,16 +434,21 @@ class HapticlabsPlayer(private val context: Context) {
     }
 
     private fun setUpSoundPool() {
-        val oggPoolAudioAttributes =
+        val soundPoolAudioAttributes =
             AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_GAME)
                 .setContentType((AudioAttributes.CONTENT_TYPE_SONIFICATION))
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            oggPoolAudioAttributes.setHapticChannelsMuted(false)
+            soundPoolAudioAttributes.setHapticChannelsMuted(false)
         }
-        oggPool = SoundPool.Builder().setAudioAttributes(oggPoolAudioAttributes.build()).build()
+        // So that sounds play together, like from MediaPlayers
+        soundPool = SoundPool.Builder()
+            .setAudioAttributes(soundPoolAudioAttributes.build())
+            .setMaxStreams(MAX_SOUND_POOL_STREAMS)
+            .build()
 
-        oggPool.setOnLoadCompleteListener { _, sampleId, status ->
-            if (status == 0) {
+        soundPool.setOnLoadCompleteListener { pool, sampleId, status ->
+            // A released pool's sample IDs are reused by the next pool
+            if (status == 0 && pool === soundPool) {
                 loadedSoundsSet.add(sampleId)
             }
         }
@@ -406,8 +457,7 @@ class HapticlabsPlayer(private val context: Context) {
 
     protected fun finalize() {
         mediaPlayer.release()
-        audioPlayer.release()
-        oggPool.release()
+        soundPool.release()
     }
 
     private fun determineHapticCapabilities(): HapticCapabilities {
@@ -773,28 +823,43 @@ class HapticlabsPlayer(private val context: Context) {
         }
     }
 
-    private fun loadAudios(
+    private fun loadAudio(
         audioDirectory: PossiblyZippedDirectory,
-        audios: List<HlaAudio>
-    ): List<LoadedAudio> {
-        return audios.mapNotNull {
-            audioDirectory.getChild(it.filename)?.let { audioFile ->
-                val player = LowLatencyAudioPlayer(audioFile, context)
-                player.preload()
-
-                LoadedAudio(
-                    player,
-                    it.startOffset
-                )
-            } ?: run {
-                Log.e(
-                    TAG,
-                    "Failed to find audio file: ${it.filename} in directory: $audioDirectory"
-                )
-                null
-            }
+        signal: ReferencesAudio
+    ): LoadedAudio? {
+        val filename = signal.audio ?: return null
+        return audioDirectory.getChild(filename)?.let { LoadedAudio(it.absolutePath) } ?: run {
+            Log.e(TAG, "Failed to find audio file: $filename in directory: $audioDirectory")
+            null
         }
     }
+
+    /**
+     * Since version 3, a signal plays one audio file, from its start.
+     *
+     * @return The filename of the first of [audios], which version 2 and legacy HLAs play at
+     * offsets
+     */
+    private fun firstAudioOf(audios: List<HlaAudio>): String? {
+        val first = audios.firstOrNull() ?: return null
+        if (audios.size > 1 || first.startOffset != 0L) {
+            Log.w(
+                TAG,
+                "Playing only ${first.filename} of the audio files ${audios.map { it.filename }}, from the start"
+            )
+        }
+        return first.filename
+    }
+
+    /**
+     * @return This version 2 HLA with the audio of each signal as version 3 has it
+     */
+    private fun HLA.withAudiosOfVersion2(): HLA = copy(
+        onOffSignal = onOffSignal.copy(audio = firstAudioOf(onOffSignal.audios)),
+        amplitudeSignal = amplitudeSignal.copy(audio = firstAudioOf(amplitudeSignal.audios)),
+        oggSignal = oggSignal.copy(audio = firstAudioOf(oggSignal.audios)),
+        pwleSignal = pwleSignal.copy(audio = firstAudioOf(pwleSignal.audios))
+    )
 
     private fun loadOGGs(
         oggDirectory: PossiblyZippedDirectory,
@@ -813,15 +878,15 @@ class HapticlabsPlayer(private val context: Context) {
         }
     }
 
-    private fun loadHLA2(
+    private fun loadParsedHLA(
         resourcesDirectoryPath: PossiblyZippedDirectory,
-        hla: HLA2,
+        hla: HLA,
         completionCallback: (loadedHLA: LoadedHLA) -> Unit
     ) {
         val loadedHLA = when (hapticsCapabilities.hapticSupportLevel) {
             1 -> LoadedHLA(
                 loadPrimitives(hla.onOffSignal.primitives) + loadAmplitudeWaveforms(hla.onOffSignal.amplitudes),
-                loadAudios(resourcesDirectoryPath, hla.onOffSignal.audios),
+                loadAudio(resourcesDirectoryPath, hla.onOffSignal),
                 emptyList(),
                 hla.onOffSignal.duration
             )
@@ -830,14 +895,14 @@ class HapticlabsPlayer(private val context: Context) {
                 loadPrimitives(hla.amplitudeSignal.primitives) + loadAmplitudeWaveforms(
                     hla.amplitudeSignal.amplitudes
                 ),
-                loadAudios(resourcesDirectoryPath, hla.amplitudeSignal.audios),
+                loadAudio(resourcesDirectoryPath, hla.amplitudeSignal),
                 emptyList(),
                 hla.amplitudeSignal.duration
             )
 
             3 -> LoadedHLA(
                 loadPrimitives(hla.oggSignal.primitives) + loadAmplitudeWaveforms(hla.oggSignal.amplitudes),
-                loadAudios(resourcesDirectoryPath, hla.oggSignal.audios),
+                loadAudio(resourcesDirectoryPath, hla.oggSignal),
                 loadOGGs(resourcesDirectoryPath, hla.oggSignal.oggs),
                 hla.oggSignal.duration
             )
@@ -847,7 +912,7 @@ class HapticlabsPlayer(private val context: Context) {
                         + loadAmplitudeWaveforms(hla.pwleSignal.amplitudes)
                         + loadPWLEWaveforms(hla.pwleSignal.envelopes)
                         + loadBasicPWLEWaveforms(hla.pwleSignal.basicEnvelopes),
-                loadAudios(resourcesDirectoryPath, hla.pwleSignal.audios),
+                loadAudio(resourcesDirectoryPath, hla.pwleSignal),
                 loadOGGs(resourcesDirectoryPath, hla.pwleSignal.oggs),
                 hla.pwleSignal.duration
             )
@@ -871,36 +936,32 @@ class HapticlabsPlayer(private val context: Context) {
             0
         )
 
-        val requiredAudioFiles = hla.RequiredAudioFiles
-        val audios = hla.Audios.map { HlaAudio(it.Time.toLong(), it.Filename) }
+        val audio = firstAudioOf(hla.Audios.map { HlaAudio(it.Time.toLong(), it.Filename) })
 
-        return loadHLA2(
+        return loadParsedHLA(
             audioDirectoryPath,
-            HLA2(
-                2,
+            HLA(
+                3,
                 hla.ProjectName,
                 hla.TrackName,
                 WaveformSignal(
                     emptyList(),
                     listOf(amplitudeWaveform),
                     hla.Duration,
-                    requiredAudioFiles,
-                    audios
+                    audio
                 ),
                 WaveformSignal(
                     emptyList(),
                     listOf(amplitudeWaveform),
                     hla.Duration,
-                    requiredAudioFiles,
-                    audios
+                    audio
                 ),
                 OGGSignal(
                     emptyList(),
                     listOf(amplitudeWaveform),
                     emptyList(),
                     hla.Duration,
-                    requiredAudioFiles,
-                    audios
+                    audio
                 ),
                 PWLESignal(
                     emptyList(),
@@ -909,8 +970,7 @@ class HapticlabsPlayer(private val context: Context) {
                     emptyList(),
                     emptyList(),
                     hla.Duration,
-                    requiredAudioFiles,
-                    audios
+                    audio
                 )
             ),
             completionCallback
@@ -918,75 +978,276 @@ class HapticlabsPlayer(private val context: Context) {
     }
 
     /**
-     * Play loaded effects, audio and OGGs, each at its offset.
+     * Play loaded audio from the start, and effects and OGGs, each at its offset.
      *
      * @param completionCallback A callback to be called when the playback is complete
      * @return A callback that when called aborts the playback
      */
-    fun playLoadedHLA(loadedHLA: LoadedHLA, completionCallback: () -> Unit): () -> Unit {
-        // Schedule everything to play back
-        val syncDelay = 0
+    fun playLoadedHLA(loadedHLA: LoadedHLA, completionCallback: () -> Unit): () -> Unit =
+        playLoadedHLA(loadedHLA, 0, 1f, completionCallback)
 
-        val startTime = SystemClock.uptimeMillis() + syncDelay
+    /**
+     * Play loaded audio from the start, and effects and OGGs, each at its offset, from
+     * [startPosition] on.
+     *
+     * Audio and OGGs that start before [startPosition] start part-way through. Effects that start
+     * before it don't play, as vibration effects can't start part-way through.
+     *
+     * @param startPosition Where to start playing, in milliseconds from the start of [loadedHLA]
+     * @param audioVolume The volume of the audio, and of the audio channels of the OGGs, from 0 for
+     * silence to 1 for the audio as it is. The haptic channels of the OGGs play as they are
+     * @param completionCallback A callback to be called when the playback is complete
+     * @return A callback that when called aborts the playback
+     */
+    fun playLoadedHLA(
+        loadedHLA: LoadedHLA,
+        startPosition: Long,
+        audioVolume: Float,
+        completionCallback: () -> Unit
+    ): () -> Unit = playLoadedHLA(loadedHLA, startPosition, audioVolume, 1f, {}, completionCallback)
 
+    /**
+     * Play loaded audio from the start, and effects and OGGs, each at its offset, from
+     * [startPosition] on.
+     *
+     * Audio and OGGs that start before [startPosition] start part-way through. Effects that start
+     * before it don't play, as vibration effects can't start part-way through.
+     *
+     * Audio and OGGs that aren't preloaded, are too long to preload, start part-way through or are
+     * stretched play with MediaPlayers, which take a while to prepare and to be heard. The playback
+     * then starts once those that start right away are heard, so that everything plays in sync.
+     *
+     * @param startPosition Where to start playing, in milliseconds from the start of [loadedHLA]
+     * @param audioVolume The volume of the audio, and of the audio channels of the OGGs, from 0 for
+     * silence to 1 for the audio as it is. The haptic channels of the OGGs play as they are
+     * @param audioDurationScale What to multiply the duration of the audio with, keeping its pitch,
+     * such as 2 to play it half as fast. In [AUDIO_DURATION_SCALES]. OGGs play as they are, and
+     * [LoadedHLA.duration] is to include the audio's scaled duration
+     * @param startCallback Called on the main thread when [startPosition] plays, unless the
+     * playback is aborted before. Start what plays along with the playback here, to keep it in sync
+     * @param completionCallback A callback to be called when the playback is complete
+     * @return A callback that when called aborts the playback
+     */
+    fun playLoadedHLA(
+        loadedHLA: LoadedHLA,
+        startPosition: Long,
+        audioVolume: Float,
+        audioDurationScale: Float,
+        startCallback: () -> Unit,
+        completionCallback: () -> Unit
+    ): () -> Unit {
+        require(audioDurationScale in AUDIO_DURATION_SCALES) {
+            "audioDurationScale must be in $AUDIO_DURATION_SCALES: $audioDurationScale"
+        }
         var aborted = false
-        var abortables = Vector<() -> Unit>()
+        val playbacks = Vector<MediaPlayback>()
+        val mediaFiles = listOfNotNull(loadedHLA.audio?.let { MediaFile(it.path, false, 0, audioDurationScale) }) +
+                loadedHLA.oggs.map { MediaFile(it.uncompressedPath, true, it.startOffset, 1f) }
 
-        for (oneAudio in loadedHLA.audio) {
-            handler.postAtTime({
-                if (!aborted) {
-                    // Set up playback termination
-                    val abortCallback = { oneAudio.audio.stopPlayback() }
-                    abortables.addElement(abortCallback)
-                    oneAudio.audio.setPlaybackEndedCallback { abortables.remove(abortCallback) }
-
-                    // Play the audio
-                    oneAudio.audio.playAudio()
+        // On the main thread, so that MediaPlayers call their listeners there
+        handler.post {
+            preparePlaybacks(mediaFiles, startPosition, audioVolume) { prepared ->
+                playbacks.addAll(prepared.map { it.second })
+                if (aborted) {
+                    prepared.forEach { it.second.stop() }
+                    return@preparePlaybacks
                 }
-            }, startTime + oneAudio.startOffset)
-        }
 
-        for (oneOGG in loadedHLA.oggs) {
-            handler.postAtTime({
-                if (!aborted) {
-                    var abortPlayback: (() -> Unit)? = null
-                    abortPlayback = this.playOGGImpl(oneOGG.uncompressedPath, {
-                        // Remove playback abort callback on playback completion
-                        if (abortPlayback != null) {
-                            abortables.remove(abortPlayback)
-                        }
-                    })
-                    // Register playback abort callback
-                    abortables.addElement(abortPlayback)
-                }
-            }, startTime + oneOGG.startOffset)
-        }
+                // MediaPlayers that start right away set when everything else starts
+                val pacingPlaybacks = prepared
+                    .filter { (file, _) -> file.startOffset <= startPosition }
+                    .map { it.second }
+                    .filterIsInstance<MediaPlayerPlayback>()
+                pacingPlaybacks.forEach { it.start() }
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            for (oneEffect in loadedHLA.effects) {
-                handler.postAtTime({
-                    if (!aborted) {
-                        getVibrator(context).vibrate(oneEffect.effect)
+                whenHeard(pacingPlaybacks) {
+                    if (aborted) {
+                        return@whenHeard
                     }
-                }, startTime + oneEffect.startOffset)
+                    // When the start of the HLA would have played, so that it plays from
+                    // startPosition now
+                    val startTime = SystemClock.uptimeMillis() - startPosition
+                    startCallback()
+
+                    for ((file, playback) in prepared.filter { it.second !in pacingPlaybacks }) {
+                        handler.postAtTime({
+                            if (!aborted) {
+                                playback.start()
+                            }
+                        }, startTime + maxOf(file.startOffset, startPosition))
+                    }
+
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        for (oneEffect in loadedHLA.effects.filter { it.startOffset >= startPosition }) {
+                            handler.postAtTime({
+                                if (!aborted) {
+                                    getVibrator(context).vibrate(oneEffect.effect)
+                                }
+                            }, startTime + oneEffect.startOffset)
+                        }
+                    }
+
+                    handler.postAtTime({
+                        if (!aborted) {
+                            completionCallback()
+                        }
+                    }, startTime + loadedHLA.duration)
+                }
             }
         }
-
-        abortables.addElement {
-            getVibrator(context).cancel()
-            completionCallback()
-        }
-
-        handler.postAtTime({
-            if (!aborted) {
-                completionCallback()
-            }
-        }, startTime + loadedHLA.duration)
 
         return {
             aborted = true
-            abortables.forEach { it() }
+            // Of a copy, as preparing may add more
+            playbacks.toList().forEach { it.stop() }
+            // Leaves the vibrations of other playbacks be
+            if (loadedHLA.effects.isNotEmpty()) {
+                getVibrator(context).cancel()
+            }
+            completionCallback()
         }
+    }
+
+    /**
+     * Prepares a playback of each of [mediaFiles] from where a playback from [startPosition] starts
+     * it.
+     *
+     * @param volume The volume of the audio, from 0 for silence to 1 for the audio as it is
+     * @param onPrepared Called once all are prepared, with each file that can play and its
+     * playback, in the order of [mediaFiles]
+     */
+    private fun preparePlaybacks(
+        mediaFiles: List<MediaFile>,
+        startPosition: Long,
+        volume: Float,
+        onPrepared: (List<Pair<MediaFile, MediaPlayback>>) -> Unit
+    ) {
+        if (mediaFiles.isEmpty()) {
+            onPrepared(emptyList())
+            return
+        }
+        val playbacks = arrayOfNulls<MediaPlayback>(mediaFiles.size)
+        var unpreparedCount = mediaFiles.size
+        mediaFiles.forEachIndexed { index, file ->
+            preparePlayback(file, file.positionAt(startPosition), volume) { playback ->
+                playbacks[index] = playback
+                unpreparedCount--
+                if (unpreparedCount == 0) {
+                    onPrepared(mediaFiles.zip(playbacks).mapNotNull { (file, playback) ->
+                        playback?.let { file to it }
+                    })
+                }
+            }
+        }
+    }
+
+    /**
+     * Prepares a playback of [file] from [position], in milliseconds since its start. Plays sounds
+     * that SoundPool loaded from it with SoundPool, and others with MediaPlayers.
+     *
+     * @param volume The volume of the audio, from 0 for silence to 1 for the audio as it is. The
+     * haptic channels play as they are
+     * @param onPrepared Called with the playback once it's prepared, or with null if it can't play
+     */
+    private fun preparePlayback(
+        file: MediaFile,
+        position: Long,
+        volume: Float,
+        onPrepared: (MediaPlayback?) -> Unit
+    ) {
+        val pooledSound = loadedSoundOf(file.path)
+        // SoundPool can't start part-way through, stretch keeping the pitch, nor route haptic
+        // channels apart from the audio
+        if (pooledSound != null && position == 0L && file.durationScale == 1f &&
+            (isBuiltInSpeakerSelected || !file.hasHapticChannels)
+        ) {
+            onPrepared(SoundPoolPlayback(soundPool, pooledSound.soundId, volume))
+            return
+        }
+
+        val players = try {
+            createMediaPlayers(file, volume)
+        } catch (e: IOException) {
+            Log.e(TAG, "Failed to open media file: ${file.path}", e)
+            onPrepared(null)
+            return
+        }
+        MediaPlayerPlayback.prepare(players, position, file.durationScale, onPrepared)
+    }
+
+    /**
+     * Creates the MediaPlayers that play [file] together. Haptic channels play on the built-in
+     * speaker's vibrator, so where audio plays elsewhere, one player plays them there and another
+     * the audio.
+     *
+     * @param volume The volume of the audio, from 0 for silence to 1 for the audio as it is. The
+     * haptic channels play as they are
+     * @throws IOException if [file] can't be opened
+     */
+    private fun createMediaPlayers(file: MediaFile, volume: Float): List<MediaPlayer> {
+        val players = mutableListOf<MediaPlayer>()
+        try {
+            val mainPlayer = MediaPlayer().also { players += it }
+            val mainPlayerAudioAttributes =
+                AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_GAME)
+                    .setContentType((AudioAttributes.CONTENT_TYPE_SONIFICATION))
+            if (file.hasHapticChannels && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                mainPlayerAudioAttributes.setHapticChannelsMuted(false)
+            }
+            mainPlayer.setAudioAttributes(mainPlayerAudioAttributes.build())
+            mainPlayer.setDataSource(file.path)
+            mainPlayer.setVolume(volume, volume)
+
+            if (!file.hasHapticChannels || isBuiltInSpeakerSelected) {
+                return players
+            }
+
+            // We need to route the haptics to the built-in speaker! Let's find it
+            val builtInSpeaker = context.getSystemService(AudioManager::class.java)
+                ?.getDevices(GET_DEVICES_OUTPUTS)
+                ?.find { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+                ?: return players
+
+            // Turn off audio on the built-in speaker, we only need haptics there
+            mainPlayer.setVolume(0f, 0f)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                mainPlayer.setPreferredDevice(builtInSpeaker)
+            }
+
+            val audioPlayer = MediaPlayer().also { players += it }
+            val audioPlayerAttributesBuilder =
+                AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_GAME)
+                    .setContentType((AudioAttributes.CONTENT_TYPE_SONIFICATION))
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                audioPlayerAttributesBuilder.setHapticChannelsMuted(true)
+            }
+            audioPlayer.setAudioAttributes(audioPlayerAttributesBuilder.build())
+            audioPlayer.setDataSource(file.path)
+            audioPlayer.setVolume(volume, volume)
+            return players
+        } catch (e: IOException) {
+            players.forEach { it.release() }
+            throw e
+        }
+    }
+
+    /**
+     * Calls [onHeard] on the main thread once all of the started [playbacks] are heard, or after
+     * [MAX_HEARD_WAIT_MS] if they aren't by then.
+     */
+    private fun whenHeard(playbacks: List<MediaPlayerPlayback>, onHeard: () -> Unit) {
+        val deadline = SystemClock.uptimeMillis() + MAX_HEARD_WAIT_MS
+        fun check() {
+            if (playbacks.all { it.isHeard }) {
+                onHeard()
+            } else if (SystemClock.uptimeMillis() >= deadline) {
+                Log.w(TAG, "Media wasn't heard within $MAX_HEARD_WAIT_MS ms, playing the rest anyway")
+                onHeard()
+            } else {
+                handler.postDelayed({ check() }, HEARD_CHECK_INTERVAL_MS)
+            }
+        }
+        check()
     }
 
     /**
@@ -1089,16 +1350,19 @@ class HapticlabsPlayer(private val context: Context) {
             val jsonObject = genericJSONAdapter.fromJson(data) ?: emptyMap<String, Any>()
             val version = (jsonObject["version"] as? Number)?.toInt()
             if (version != null) {
-                if (version != 2) {
+                if (version != 2 && version != 3) {
                     // Invalid version
                     throw Exception("Unknown HLA version: $version")
                 }
-                // It's an HLA2 file
-                val hla2Adapter = moshi.adapter(HLA2::class.java)
-                val hla2 = hla2Adapter.fromJson(data)
-                    ?: throw Exception("Failed to parse the file as HLA2")
+                val hla = moshi.adapter(HLA::class.java).fromJson(data)
+                    ?: throw Exception("Failed to parse the file as HLA version $version")
 
-                loadHLA2(audioDirectoryPath, hla2, completionCallback)
+                if (version == 2) {
+                    Log.w(TAG, "HLA version 2 is deprecated in favor of version 3: ${hlaFile.name}")
+                    loadParsedHLA(audioDirectoryPath, hla.withAudiosOfVersion2(), completionCallback)
+                } else {
+                    loadParsedHLA(audioDirectoryPath, hla, completionCallback)
+                }
             } else {
                 // It's likely a LegacyHLA file
                 val legacyHLAAdapter = moshi.adapter(LegacyHLA::class.java)
@@ -1113,47 +1377,39 @@ class HapticlabsPlayer(private val context: Context) {
         }
     }
 
-    private fun canOGGBeLoadedToSoundPool(
-        uncompressedPath: String
-    ): Boolean {
-        if (poolMap.containsKey(uncompressedPath)) {
-            return true
+    /**
+     * @return The format of the first audio track of the file at [path], or null if it has none or
+     * can't be read
+     */
+    private fun audioFormatOf(path: String): MediaFormat? {
+        val extractor = MediaExtractor()
+        return try {
+            extractor.setDataSource(path)
+            (0 until extractor.trackCount).map { extractor.getTrackFormat(it) }
+                .firstOrNull { it.getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true }
+        } catch (e: IOException) {
+            Log.e(TAG, "Failed to read the audio format of: $path", e)
+            null
+        } finally {
+            extractor.release()
         }
-
-        val retriever = MediaMetadataRetriever()
-        retriever.setDataSource(uncompressedPath)
-        val durationMs =
-            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toInt()
-        val sampleRateHz = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_SAMPLERATE)?.toLong()
-        } else {
-            // Assume 48 kHz
-            48000
-        }
-        retriever.release()
-
-        // Stereo audio + haptics
-        val channelCount = 3
-
-        if (durationMs == null || sampleRateHz == null) {
-            // Truly, we can't tell. So to be safe, we need to assume we can't load it
-            return false
-        }
-
-        val totalBitsConsumed =
-            SOUNDPOOL_BITS_PER_SAMPLE * channelCount * durationMs * sampleRateHz / 1000
-
-        // Maximum is one MB
-        return totalBitsConsumed < 8 * 1_000_000
     }
+
+    /**
+     * @return The duration of the audio in [format] in milliseconds, or null if it doesn't state it
+     */
+    private fun durationOf(format: MediaFormat): Long? =
+        if (format.containsKey(MediaFormat.KEY_DURATION)) {
+            format.getLong(MediaFormat.KEY_DURATION) / MICROSECONDS_PER_MILLISECOND
+        } else {
+            null
+        }
 
     private fun preloadUncompressedPathOGG(
         uncompressedPath: String
     ) {
         if (hapticsCapabilities.supportsAudioCoupled) {
-            loadOGG(
-                uncompressedPath
-            )
+            loadToSoundPool(uncompressedPath)
         }
     }
 
@@ -1185,7 +1441,10 @@ class HapticlabsPlayer(private val context: Context) {
                 // Store the result in the preloaded map
                 hacMap[directoryOrHacPath] = it
 
-                // Try to preload the oggs as well
+                // Try to preload the audio and oggs as well
+                it.audio?.let { audio ->
+                    loadToSoundPool(audio.path)
+                }
                 it.oggs.forEach { ogg ->
                     preloadUncompressedPathOGG(ogg.uncompressedPath)
                 }
@@ -1213,12 +1472,25 @@ class HapticlabsPlayer(private val context: Context) {
             ?: Log.e(TAG, "No OGG file found at: $oggPath")
     }
 
-    private fun unloadUncompressedPathOGG(uncompressedPath: String) {
-        val loaded = poolMap[uncompressedPath]
-        loaded?.soundId?.let {
-            oggPool.unload(it)
-            poolMap.remove(uncompressedPath)
-            loadedSoundsSet.remove(it)
+    /**
+     * Preload an audio file for lower latency playback with [playLoadedHLA].
+     *
+     * The audio file can be preloaded only if its uncompressed size is less than 1 MB, such as 5 s
+     * of 48 kHz stereo audio. In that case, it starts playing from its start with substantially
+     * less latency. Call [unloadAudio] to release the resources.
+     *
+     * @param audioPath The path to the audio file. Can be an absolute path in the filesystem or a
+     * path in the assets directory
+     */
+    fun preloadAudio(audioPath: String) {
+        resolveFile(audioPath)?.let { loadToSoundPool(it.absolutePath) }
+            ?: Log.e(TAG, "No audio file found at: $audioPath")
+    }
+
+    private fun unloadFromSoundPool(path: String) {
+        poolMap.remove(path)?.let {
+            soundPool.unload(it.soundId)
+            loadedSoundsSet.remove(it.soundId)
         }
     }
 
@@ -1233,9 +1505,12 @@ class HapticlabsPlayer(private val context: Context) {
     fun unload(directoryOrHacPath: String) {
         if (directoryOrHacPath.endsWith(HAC_EXTENSION)) {
             hacMap[directoryOrHacPath]?.let {
-                // Unload the included oggs
+                // Unload the included audio and oggs
+                it.audio?.let { audio ->
+                    unloadFromSoundPool(audio.path)
+                }
                 it.oggs.forEach { ogg ->
-                    unloadUncompressedPathOGG(ogg.uncompressedPath)
+                    unloadFromSoundPool(ogg.uncompressedPath)
                 }
 
                 // Remove from the preload map
@@ -1256,55 +1531,63 @@ class HapticlabsPlayer(private val context: Context) {
      * in the assets directory
      */
     fun unloadOGG(oggPath: String) {
-        resolveFile(oggPath)?.let { unloadUncompressedPathOGG(it.absolutePath) }
+        resolveFile(oggPath)?.let { unloadFromSoundPool(it.absolutePath) }
     }
 
     /**
-     * Unload all resources previously loaded with [preload] or [preloadOGG]
+     * Unload an audio file previously loaded with [preloadAudio]
+     *
+     * @param audioPath The path to the audio file. Can be an absolute path in the filesystem or a
+     * path in the assets directory
+     */
+    fun unloadAudio(audioPath: String) {
+        resolveFile(audioPath)?.let { unloadFromSoundPool(it.absolutePath) }
+    }
+
+    /**
+     * Unload all resources previously loaded with [preload], [preloadOGG] or [preloadAudio]
      */
     fun unloadAll() {
-        // Release all loaded OGGs
-        oggPool.release()
+        // Release all loaded sounds
+        soundPool.release()
 
         // Recreate the SoundPool
         setUpSoundPool()
 
-        // Clear the pool map
+        // The new SoundPool reuses the sound IDs
         poolMap.clear()
+        loadedSoundsSet.clear()
     }
 
-    private fun getOGGSoundId(
-        uncompressedPath: String
-    ): LoadedOGG? {
-        // Check if it's already loaded
-        return poolMap[uncompressedPath]?.let {
-            // Already loading or loaded
-            if (loadedSoundsSet.contains(it.soundId)) it else null
-        }
-    }
+    /**
+     * @return The sound SoundPool loaded from [path], unless it isn't loaded or still loading
+     */
+    private fun loadedSoundOf(path: String): PooledSound? =
+        poolMap[path]?.takeIf { loadedSoundsSet.contains(it.soundId) }
 
-    private fun loadOGG(
-        uncompressedPath: String
-    ) {
-        // Check if it's already loaded
-        poolMap[uncompressedPath]?.let {
-            // Already loading or loaded
+    /**
+     * @return Whether SoundPool loaded the file at [path], so that it plays with little latency
+     */
+    internal fun isLoadedToSoundPool(path: String): Boolean = loadedSoundOf(path) != null
+
+    /**
+     * Loads the file at [path] into SoundPool, unless it's loading or loaded already, or too large
+     * for SoundPool.
+     */
+    private fun loadToSoundPool(path: String) {
+        if (poolMap.containsKey(path)) {
             return
         }
 
-        if (canOGGBeLoadedToSoundPool(uncompressedPath)) {
-            // Load the duration
-            val retriever = MediaMetadataRetriever()
-            retriever.setDataSource(uncompressedPath)
-            val durationMs =
-                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toInt()
-                    ?: 0
-            retriever.release()
-
-            poolMap[uncompressedPath] =
-                LoadedOGG(oggPool.load(uncompressedPath, 1), durationMs)
+        val format = audioFormatOf(path) ?: return
+        // Truly, we can't tell its size. So to be safe, we need to assume we can't load it
+        val durationMs = durationOf(format) ?: return
+        val decodedBytes = format.getInteger(MediaFormat.KEY_SAMPLE_RATE).toLong() *
+                format.getInteger(MediaFormat.KEY_CHANNEL_COUNT) *
+                SOUNDPOOL_BYTES_PER_SAMPLE * durationMs / MILLISECONDS_PER_SECOND
+        if (decodedBytes < SOUNDPOOL_MAX_BYTES) {
+            poolMap[path] = PooledSound(soundPool.load(path, 1), durationMs)
         }
-
     }
 
     /**
@@ -1331,143 +1614,10 @@ class HapticlabsPlayer(private val context: Context) {
             completionCallback()
             return {}
         }
-        return playOGGImpl(oggFile.absolutePath, completionCallback)
-    }
-
-    private fun playOGGImpl(
-        uncompressedPath: String,
-        completionCallback: () -> Unit
-    ): () -> Unit {
-        val loadedSound = getOGGSoundId(uncompressedPath)
-
-        // Store whether the playback has been aborted
-        var aborted = false
-
-        if (isBuiltInSpeakerSelected && loadedSound != null) {
-            // SoundPool approach
-            var streamId = 0
-            val abort = {
-                aborted = true
-                oggPool.stop(streamId)
-                completionCallback()
-            }
-            streamId = oggPool.play(loadedSound.soundId, 1f, 1f, 1, 0, 1.0f)
-            Log.d(TAG, "Playing OGG from SoundPool: $uncompressedPath")
-
-            // Schedule the completion callback
-            handler.postDelayed({
-                if (!aborted) {
-                    completionCallback()
-                }
-            }, loadedSound.duration.toLong())
-
-            return abort
-        }
-
-        // Need to route the haptic playback to the device speaker!
-        // That only works with the MediaPlayer.
-
-        // Set up the mediaPlayer
-        mediaPlayer.release()
-        mediaPlayer = MediaPlayer()
-
-        val mediaPlayerAudioAttributes =
-            AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_GAME)
-                .setContentType((AudioAttributes.CONTENT_TYPE_SONIFICATION))
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            mediaPlayerAudioAttributes.setHapticChannelsMuted(false)
-        }
-
-        mediaPlayer.setAudioAttributes(
-            mediaPlayerAudioAttributes
-                .build()
-        )
-
-        mediaPlayer.setDataSource(uncompressedPath)
-
-        // Whether we need to run the audioPlayer or not
-        var useSeparateAudio = false
-
-        // Continue with the separating approach only if we found a built-in speaker and if the
-        // built-in speaker is not selected
-        if (!isBuiltInSpeakerSelected) {
-
-            // We need to route the haptics to the device speaker!
-            // Let's find that device speaker
-            val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-            val outputDevices = audioManager.getDevices(GET_DEVICES_OUTPUTS)
-
-            val builtInSpeaker =
-                outputDevices.find { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
-            builtInSpeaker?.let {
-                // We will need to run the audioPlayer
-                useSeparateAudio = true
-
-                // Set up the audio player
-                audioPlayer.release()
-                audioPlayer = MediaPlayer()
-
-                val audioPlayerAttributesBuilder =
-                    AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_GAME)
-                        .setContentType((AudioAttributes.CONTENT_TYPE_SONIFICATION))
-
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    audioPlayerAttributesBuilder.setHapticChannelsMuted(true)
-                }
-
-                audioPlayer.setAudioAttributes(
-                    audioPlayerAttributesBuilder.build()
-                )
-
-                // Turn off audio on the device speaker, we only need haptics there
-                mediaPlayer.setVolume(0f, 0f)
-
-                // Route the haptic playback to the built-in speaker
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                    mediaPlayer.setPreferredDevice(builtInSpeaker)
-                }
-
-                // Prepare the audio player
-                audioPlayer.setDataSource(uncompressedPath)
-                try {
-                    audioPlayer.prepare()
-                } catch (e: IOException) {
-                    e.printStackTrace()
-                }
-            }
-        }
-
-        try {
-            mediaPlayer.prepare()
-        } catch (e: IOException) {
-            e.printStackTrace()
-        }
-
-        val abort = {
-            aborted = true
-            if (useSeparateAudio) {
-                audioPlayer.stop()
-            }
-            mediaPlayer.stop()
-            completionCallback()
-        }
-
-        // Go!
-        if (useSeparateAudio) {
-            audioPlayer.start()
-        }
-        mediaPlayer.start()
-        Log.d(TAG, "Playing OGG from MediaPlayer: $uncompressedPath")
-
-        mediaPlayer.setOnCompletionListener { _ ->
-            // Playback completed
-            if (!aborted) {
-                completionCallback()
-            }
-        }
-
-        return abort
+        val path = oggFile.absolutePath
+        val durationMs = poolMap[path]?.duration ?: audioFormatOf(path)?.let { durationOf(it) } ?: 0
+        val oggOnly = LoadedHLA(emptyList(), null, listOf(UncompressedOGGFile(path, 0)), durationMs)
+        return playLoadedHLA(oggOnly, completionCallback)
     }
 
     /**
