@@ -8,7 +8,7 @@ To use this library in your project, add it to your app level `build.gradle`'s `
 
 ```groovy
 dependencies {
-  implementation "io.hapticlabs:hapticlabsplayer:0.8.0"
+  implementation "io.hapticlabs:hapticlabsplayer:1.0.0"
 }
 ```
 
@@ -16,7 +16,7 @@ Alternatively, register the library in your `libs.versions.toml`:
 
 ```toml
 [versions]
-hapticlabsplayer = "0.8.0"
+hapticlabsplayer = "1.0.0"
 
 [libraries]
 hapticlabsplayer = { module = "io.hapticlabs:hapticlabsplayer", version.ref = "hapticlabsplayer" }
@@ -175,20 +175,6 @@ Preloads an OGG file for low-latency playback.
 
 ---
 
-### `fun preloadAudio(audioPath: String)`
-
-Preloads an audio file for low-latency playback with `playLoadedHLA`.
-
-- **Parameters:**
-
-  - `audioPath`: Path to the audio file (absolute or asset path).
-
-- **Behavior:**
-  - Loads the audio file into memory if its uncompressed size is less than 1 MB, such as 5 s of 48 kHz stereo audio. Audio that isn't preloaded, plays part-way through or plays stretched by `playLoadedHLA`'s `audioDurationScale`, plays with a `MediaPlayer`, which takes a moment to be heard. `playLoadedHLA` then starts everything else once it is, so that all plays in sync.
-  - Call `unloadAudio()` to release the resource.
-
----
-
 ### `fun unload(directoryOrHacPath: String)`
 
 Unloads a `.hac` file or legacy directory previously loaded with `preload`.
@@ -215,22 +201,9 @@ Unloads an OGG file previously loaded with `preloadOGG`.
 
 ---
 
-### `fun unloadAudio(audioPath: String)`
-
-Unloads an audio file previously loaded with `preloadAudio`.
-
-- **Parameters:**
-
-  - `audioPath`: Path to the audio file (absolute or asset path).
-
-- **Behavior:**
-  - Releases the audio resource from memory.
-
----
-
 ### `fun unloadAll()`
 
-Unloads all resources previously loaded with `preload`, `preloadOGG` or `preloadAudio`.
+Unloads all resources previously loaded with `preload` or `preloadOGG`.
 
 - **Behavior:**
   - Releases all loaded audio and OGGs and clears internal caches.
@@ -241,16 +214,20 @@ Unloads all resources previously loaded with `preload`, `preloadOGG` or `preload
 
 ### `val hapticsCapabilities: HapticCapabilities`
 
-Describes the haptic capabilities of the current device, including support for on/off, amplitude, audio-coupled, and envelope effects, as well as actuator frequency response and quality factor.
+Describes the haptic capabilities of the current device, including support for on/off, amplitude, audio-coupled, and envelope effects, as well as actuator frequency response and quality factor. `HapticCapabilities` is in `io.hapticlabs.hapticlabsplayer.core`, see [Core library](#core-library).
 
 ---
 
 ## Usage Notes
 
 - Always call `unload` or `unloadAll` to release resources when they are no longer needed.
-- Use `preload`, `preloadOGG` and `preloadAudio` to minimize playback latency for time-critical applications.
+- Use `preload` and `preloadOGG` to minimize playback latency for time-critical applications.
 - The legacy directory-based approach is deprecated; prefer `.hac` files for new projects.
 - Playback methods automatically select the best available haptic effect based on device capabilities.
+
+## Core library
+
+`hapticlabsplayer` builds on [`hapticlabsplayer-core`](https://github.com/HapticlabsIO/android-hapticlabsplayer-core), which it brings along: the device's capabilities and effects (`HapticDevice`) and audio and OGG playback (`HapticMediaPlayer`), which [`habplayer`](https://github.com/HapticlabsIO/android-habplayer) uses too. `HapticCapabilities`, `HapticPrimitive`, `LoadedEffect`, `LoadedAudio`, `UncompressedOGGFile` and `getVibrator` are in its package `io.hapticlabs.hapticlabsplayer.core`, having been in `io.hapticlabs.hapticlabsplayer` before version 1.0.0.
 
 ## Development
 
@@ -259,6 +236,8 @@ This repository is a standalone Gradle build. It uses React Native's Android Gra
 ```sh
 ./gradlew build
 ```
+
+To build against a local `hapticlabsplayer-core` instead of the published one, pass the path of a [HapticlabsAndroidPackage](https://github.com/HapticlabsIO/android-example) checkout, whose submodules this repository and the core are, as in `./gradlew -PhapticlabsAndroidPackageDir=.. build`.
 
 Generating OGGs from `.hab` files lives in [`habplayer`](https://github.com/HapticlabsIO/android-habplayer), which builds on this library.
 

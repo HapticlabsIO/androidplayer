@@ -3,6 +3,7 @@ package io.hapticlabs.hapticlabsplayer
 import android.os.Build
 import android.os.VibrationEffect
 import android.util.Log
+import io.hapticlabs.hapticlabsplayer.core.LoadedEffect
 
 internal object EffectCombiner {
     private const val TAG = "EffectCombiner"

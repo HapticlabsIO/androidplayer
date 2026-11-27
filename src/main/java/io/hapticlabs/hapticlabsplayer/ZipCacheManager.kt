@@ -2,6 +2,7 @@ package io.hapticlabs.hapticlabsplayer
 
 import android.content.Context
 import android.util.Log
+import io.hapticlabs.hapticlabsplayer.core.sha256Hex
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream

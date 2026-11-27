@@ -2,26 +2,12 @@ package io.hapticlabs.hapticlabsplayer
 
 import android.content.Context
 import android.content.pm.PackageManager
-import android.os.Vibrator
-import android.os.VibratorManager
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InputStream
 import android.os.Build
-import java.security.MessageDigest
 
-
-fun getVibrator(context: Context): Vibrator {
-    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-        val vibratorManager =
-            context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
-        vibratorManager.defaultVibrator
-    } else {
-        @Suppress("DEPRECATION")
-        context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
-    }
-}
 
 /**
  * @return When the app was last installed or updated, in milliseconds since the epoch
@@ -75,19 +61,4 @@ fun getUncompressedAssetPath(assetName: String, context: Context): File {
     }
 
     return outFile
-}
-
-/**
- * Hashes everything [inputStream] provides with SHA-256.
- *
- * @return The hash as lowercase hex digits
- */
-fun sha256Hex(inputStream: InputStream): String {
-    val digest = MessageDigest.getInstance("SHA-256")
-    val buffer = ByteArray(8192)
-    var bytesRead: Int
-    while (inputStream.read(buffer).also { bytesRead = it } != -1) {
-        digest.update(buffer, 0, bytesRead)
-    }
-    return digest.digest().joinToString("") { "%02x".format(it) }
 }
