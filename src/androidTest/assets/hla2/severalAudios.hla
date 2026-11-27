@@ -1,0 +1,5 @@
+{"version":2,"projectName":"Test","trackName":"severalAudios",
+"onOffSignal":{"primitives":[],"amplitudes":[],"duration":10,"requiredAudioFiles":["audio.wav","missing.wav"],"audios":[{"startOffset":500,"filename":"audio.wav"},{"startOffset":0,"filename":"missing.wav"}]},
+"amplitudeSignal":{"primitives":[],"amplitudes":[],"duration":10,"requiredAudioFiles":["audio.wav","missing.wav"],"audios":[{"startOffset":500,"filename":"audio.wav"},{"startOffset":0,"filename":"missing.wav"}]},
+"oggSignal":{"primitives":[],"amplitudes":[],"oggs":[],"duration":10,"requiredAudioFiles":["audio.wav","missing.wav"],"audios":[{"startOffset":500,"filename":"audio.wav"},{"startOffset":0,"filename":"missing.wav"}]},
+"pwleSignal":{"primitives":[],"amplitudes":[],"oggs":[],"envelopes":[],"basicEnvelopes":[],"duration":10,"requiredAudioFiles":["audio.wav","missing.wav"],"audios":[{"startOffset":500,"filename":"audio.wav"},{"startOffset":0,"filename":"missing.wav"}]}}

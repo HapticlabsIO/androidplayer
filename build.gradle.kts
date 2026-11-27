@@ -134,7 +134,9 @@ tasks.withType<JReleaserDeployTask>().configureEach {
 }
 
 dependencies {
-    implementation(libs.androidx.mediarouter)
+    // Its public API has the core's types, such as HapticCapabilities
+    api(libs.hapticlabsplayer.core)
+    implementation(libs.androidx.annotation)
     testImplementation(libs.junit)
     androidTestImplementation(libs.ext.junit)
     androidTestImplementation(libs.espresso.core)
